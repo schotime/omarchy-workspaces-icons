@@ -159,7 +159,7 @@ BarWidget {
     Repeater {
       model: root.workspaceIds()
 
-      RowLayout {
+      Item {
         id: cell
         required property int modelData
 
@@ -169,30 +169,31 @@ BarWidget {
         readonly property bool focused: Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === modelData
         readonly property real iconSize: Style.space(10)
 
-        spacing: 0
+        implicitWidth: row.implicitWidth
+        implicitHeight: row.implicitHeight
 
-        Item {
-          Layout.alignment: Qt.AlignVCenter
-          implicitWidth: numberButton.implicitWidth
-          implicitHeight: numberButton.implicitHeight
+        Rectangle {
+          anchors.centerIn: parent
+          width: row.implicitWidth - Style.space(4)
+          height: Math.min(parent.height, cell.iconSize + Style.space(4))
+          radius: Style.space(3)
+          color: root.bar ? root.bar.barForeground : Color.foreground
+          visible: cell.focused
+        }
 
-          Rectangle {
-            anchors.centerIn: parent
-            width: parent.width - Style.space(4)
-            height: Math.min(parent.height, cell.iconSize + Style.space(4))
-            radius: Style.space(3)
-            color: root.bar ? root.bar.barForeground : Color.foreground
-            visible: cell.focused
-          }
+        RowLayout {
+          id: row
+          anchors.fill: parent
+          spacing: 0
 
           WidgetButton {
             id: numberButton
-            anchors.fill: parent
+            Layout.alignment: Qt.AlignVCenter
             bar: root.bar
             text: cell.modelData === 10 ? "0:" : String(cell.modelData) + ":"
             foreground: cell.focused ? Color.bar.background : (root.bar ? root.bar.barForeground : Color.foreground)
             useActiveColor: false
-            fontSize: Style.font.body - 2
+            fontSize: Style.font.body - 4
             opacity: cell.occupied || cell.focused ? 1 : 0.5
             horizontalMargin: 6
             verticalPadding: 6
@@ -200,77 +201,77 @@ BarWidget {
             fixedHeight: root.barSize
             onPressed: function() { root.focusWorkspace(cell.modelData) }
           }
-        }
 
-        Row {
-          Layout.alignment: Qt.AlignVCenter
-          spacing: Style.space(2)
-          visible: !root.vertical && cell.toplevels.length > 0
+          Row {
+            Layout.alignment: Qt.AlignVCenter
+            spacing: Style.space(2)
+            visible: !root.vertical && cell.toplevels.length > 0
 
-          Repeater {
-            model: cell.toplevels
+            Repeater {
+              model: cell.toplevels
 
-            Image {
-              id: icon
-              required property var modelData
+              Image {
+                id: icon
+                required property var modelData
 
-              readonly property string windowClass: (modelData.wayland && modelData.wayland.appId)
-                || (modelData.lastIpcObject && modelData.lastIpcObject.class) || ""
-              readonly property int windowPid: (modelData.lastIpcObject && modelData.lastIpcObject.pid) || 0
-              readonly property bool isAgentWindow: windowClass === "org.omarchy.agent"
-              property string detectedAgentBinary: ""
-              readonly property string windowTitle: modelData.title || ""
-              // Bar.showTooltip() only actually shows the tooltip if the target
-              // exposes a `tooltipHovered` property (see how WidgetButton does
-              // it) - a plain Image has none, so without this the call above
-              // silently no-ops every time.
-              readonly property bool tooltipHovered: hoverArea.containsMouse
+                readonly property string windowClass: (modelData.wayland && modelData.wayland.appId)
+                  || (modelData.lastIpcObject && modelData.lastIpcObject.class) || ""
+                readonly property int windowPid: (modelData.lastIpcObject && modelData.lastIpcObject.pid) || 0
+                readonly property bool isAgentWindow: windowClass === "org.omarchy.agent"
+                property string detectedAgentBinary: ""
+                readonly property string windowTitle: modelData.title || ""
+                // Bar.showTooltip() only actually shows the tooltip if the target
+                // exposes a `tooltipHovered` property (see how WidgetButton does
+                // it) - a plain Image has none, so without this the call above
+                // silently no-ops every time.
+                readonly property bool tooltipHovered: hoverArea.containsMouse
 
-              // Unwrap omarchy-launch-tui's "org.omarchy.<binary>" convention
-              // (org.omarchy.agent is handled separately, see isAgentWindow) so
-              // lookups use the plain binary name a desktop entry or icon
-              // theme would actually recognize.
-              readonly property string lookupClass: (!isAgentWindow && windowClass.indexOf("org.omarchy.") === 0)
-                ? root.tuiBinaryName(windowClass)
-                : windowClass
+                // Unwrap omarchy-launch-tui's "org.omarchy.<binary>" convention
+                // (org.omarchy.agent is handled separately, see isAgentWindow) so
+                // lookups use the plain binary name a desktop entry or icon
+                // theme would actually recognize.
+                readonly property string lookupClass: (!isAgentWindow && windowClass.indexOf("org.omarchy.") === 0)
+                  ? root.tuiBinaryName(windowClass)
+                  : windowClass
 
-              // Resolve through the app's desktop entry first, same as the Omarchy
-              // app launcher menu does, since a window's app id often differs from
-              // the icon name in its .desktop file (e.g. Slack, Obsidian).
-              readonly property var desktopEntry: root.findDesktopEntry(lookupClass)
-              readonly property string iconName: (desktopEntry && desktopEntry.icon) || lookupClass
-              readonly property string overridePath: isAgentWindow
-                ? root.agentIconsPath + root.agentIconNameFor(detectedAgentBinary) + ".svg"
-                : ""
+                // Resolve through the app's desktop entry first, same as the Omarchy
+                // app launcher menu does, since a window's app id often differs from
+                // the icon name in its .desktop file (e.g. Slack, Obsidian).
+                readonly property var desktopEntry: root.findDesktopEntry(lookupClass)
+                readonly property string iconName: (desktopEntry && desktopEntry.icon) || lookupClass
+                readonly property string overridePath: isAgentWindow
+                  ? root.agentIconsPath + root.agentIconNameFor(detectedAgentBinary) + ".svg"
+                  : ""
 
-              width: cell.iconSize
-              height: cell.iconSize
-              source: overridePath !== "" ? Util.fileUrl(overridePath)
-                : iconName !== "" ? Quickshell.iconPath(iconName, "application-x-executable") : ""
-              fillMode: Image.PreserveAspectFit
-              asynchronous: true
-              smooth: true
-              visible: status === Image.Ready
+                width: cell.iconSize
+                height: cell.iconSize
+                source: overridePath !== "" ? Util.fileUrl(overridePath)
+                  : iconName !== "" ? Quickshell.iconPath(iconName, "application-x-executable") : ""
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                smooth: true
+                visible: status === Image.Ready
 
-              Process {
-                running: icon.isAgentWindow && icon.windowPid > 0
-                command: ["bash", "-c", root.agentDetectScript(icon.windowPid)]
-                stdout: SplitParser {
-                  onRead: function(line) {
-                    var trimmed = String(line || "").trim()
-                    if (trimmed !== "") icon.detectedAgentBinary = trimmed
+                Process {
+                  running: icon.isAgentWindow && icon.windowPid > 0
+                  command: ["bash", "-c", root.agentDetectScript(icon.windowPid)]
+                  stdout: SplitParser {
+                    onRead: function(line) {
+                      var trimmed = String(line || "").trim()
+                      if (trimmed !== "") icon.detectedAgentBinary = trimmed
+                    }
                   }
                 }
-              }
 
-              MouseArea {
-                id: hoverArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.focusWorkspace(cell.modelData)
-                onEntered: if (root.bar) root.bar.showTooltip(icon, icon.windowTitle)
-                onExited: if (root.bar) root.bar.hideTooltip(icon)
+                MouseArea {
+                  id: hoverArea
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.focusWorkspace(cell.modelData)
+                  onEntered: if (root.bar) root.bar.showTooltip(icon, icon.windowTitle)
+                  onExited: if (root.bar) root.bar.hideTooltip(icon)
+                }
               }
             }
           }

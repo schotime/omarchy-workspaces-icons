@@ -11,6 +11,7 @@ workspace.
 
 ```bash
 omarchy plugin add https://github.com/deda/omarchy-workspaces-icons.git --enable
+omarchy plugin disable omarchy.workspaces
 ```
 
 ## Manual install
@@ -18,6 +19,7 @@ omarchy plugin add https://github.com/deda/omarchy-workspaces-icons.git --enable
 ```bash
 git clone https://github.com/deda/omarchy-workspaces-icons.git ~/.config/omarchy/plugins/deda.workspaces-icons
 omarchy plugin enable deda.workspaces-icons
+omarchy plugin disable omarchy.workspaces
 ```
 
 ## Update
