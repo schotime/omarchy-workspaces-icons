@@ -177,7 +177,11 @@ BarWidget {
           width: row.implicitWidth - Style.space(4)
           height: Math.min(parent.height, cell.iconSize + Style.space(4))
           radius: Style.space(3)
-          color: root.bar ? root.bar.barForeground : Color.foreground
+          // Upstream paints this solid. Route it through the same fill system
+          // every other control uses so it follows `selected-fill-alpha` from
+          // ~/.config/omarchy/shell.toml instead of hardcoding an opacity here.
+          // `selected-color` defaults to "foreground", so this stays neutral.
+          color: Style.selectedFillFor(root.bar ? root.bar.barForeground : Color.foreground, Color.accent)
           visible: cell.focused
         }
 
@@ -191,7 +195,7 @@ BarWidget {
             Layout.alignment: Qt.AlignVCenter
             bar: root.bar
             text: cell.modelData === 10 ? "0:" : String(cell.modelData) + ":"
-            foreground: cell.focused ? Color.bar.background : (root.bar ? root.bar.barForeground : Color.foreground)
+            foreground: root.bar ? root.bar.barForeground : Color.foreground
             useActiveColor: false
             fontSize: Style.font.body - 4
             opacity: cell.occupied || cell.focused ? 1 : 0.5
