@@ -203,6 +203,7 @@ BarWidget {
           }
 
           Row {
+            id: icons
             Layout.alignment: Qt.AlignVCenter
             spacing: Style.space(2)
             visible: !root.vertical && cell.toplevels.length > 0
@@ -274,6 +275,15 @@ BarWidget {
                 }
               }
             }
+          }
+
+          // Mirrors the empty space WidgetButton's centered label leaves inside
+          // its fixed-width box, so the badge gets the same breathing room after
+          // the rightmost icon as it does before the workspace number.
+          Item {
+            Layout.alignment: Qt.AlignVCenter
+            visible: icons.visible
+            width: icons.visible ? Math.max(0, (numberButton.width - numberButton.labelWidth) / 2) : 0
           }
         }
       }
