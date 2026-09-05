@@ -145,6 +145,15 @@ BarWidget {
 
   readonly property real trailingGap: root.vertical ? 0 : Style.spaceReal(1.5)
 
+  // GridLayout's columnSpacing is dead space: the bar only dispatches a click
+  // that lands on a registered target, and a gap between two cells belongs to
+  // neither. Carry the gap as per-cell padding instead, so every pixel between
+  // two workspaces belongs to one of them. The split puts the seam exactly
+  // where columnSpacing had it, so nothing moves on screen.
+  readonly property real cellGap: root.vertical ? 0 : Style.space(6)
+  readonly property real cellLeadPad: Math.floor(cellGap / 2)
+  readonly property real cellTrailPad: cellGap - cellLeadPad
+
   implicitWidth: grid.implicitWidth + trailingGap
   implicitHeight: grid.implicitHeight
 
@@ -153,7 +162,7 @@ BarWidget {
     anchors.fill: parent
     anchors.rightMargin: root.trailingGap
     columns: root.vertical ? 1 : root.workspaceIds().length
-    columnSpacing: root.vertical ? 0 : Style.space(6)
+    columnSpacing: 0
     rowSpacing: root.vertical ? Style.space(2) : 0
 
     Repeater {
@@ -162,18 +171,22 @@ BarWidget {
       Item {
         id: cell
         required property int modelData
+        required property int index
 
         readonly property var workspace: root.workspaceById(modelData)
         readonly property var toplevels: workspace !== null ? workspace.toplevels.values : []
         readonly property bool occupied: toplevels.length > 0
         readonly property bool focused: Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === modelData
         readonly property real iconSize: Style.space(10)
+        readonly property real leadPad: index === 0 ? 0 : root.cellLeadPad
+        readonly property real trailPad: index === root.workspaceIds().length - 1
+          ? 0 : root.cellTrailPad
 
-        implicitWidth: row.implicitWidth
+        implicitWidth: row.implicitWidth + leadPad + trailPad
         implicitHeight: row.implicitHeight
 
         Rectangle {
-          anchors.centerIn: parent
+          anchors.centerIn: row
           width: row.implicitWidth - Style.space(4)
           height: Math.min(parent.height, cell.iconSize + Style.space(4))
           radius: Style.space(3)
@@ -185,9 +198,27 @@ BarWidget {
           visible: cell.focused
         }
 
+        // The bar only dispatches a click when it lands on a registered
+        // WidgetButton, so every other pixel of the cell eats it: the gaps
+        // between icons, the trailing pad, and the strip above and below the
+        // icon row (icons are iconSize tall in a barSize tall cell). One
+        // full-cell button makes the whole workspace block focus that
+        // workspace, which is what a stray click in there was aiming at
+        // anyway. Declared before the row so it stays underneath the icons
+        // and leaves their hover tooltips alone.
+        WidgetButton {
+          anchors.fill: parent
+          bar: root.bar
+          labelVisible: false
+          hasVisualContent: true
+          onPressed: function(button) { root.focusWorkspace(cell.modelData) }
+        }
+
         RowLayout {
           id: row
           anchors.fill: parent
+          anchors.leftMargin: cell.leadPad
+          anchors.rightMargin: cell.trailPad
           spacing: 0
 
           WidgetButton {
