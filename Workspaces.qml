@@ -150,7 +150,13 @@ BarWidget {
   // neither. Carry the gap as per-cell padding instead, so every pixel between
   // two workspaces belongs to one of them. The split puts the seam exactly
   // where columnSpacing had it, so nothing moves on screen.
-  readonly property real cellGap: root.vertical ? 0 : Style.space(6)
+  // One gap for every seam. The cells either side already bring their own
+  // padding - an empty cell pads its digit inside a fixed box, an occupied one
+  // ends in the spacer that balances its focus badge - so the seam only makes
+  // up the difference. Sizing a seam from what sits either side of it went
+  // wrong: it lands on one side of a cell but not the other, so a focused cell
+  // on that boundary drew its badge visibly off-centre between its neighbours.
+  readonly property real cellGap: root.vertical ? 0 : Style.space(3)
   readonly property real cellLeadPad: Math.floor(cellGap / 2)
   readonly property real cellTrailPad: cellGap - cellLeadPad
 
@@ -207,6 +213,7 @@ BarWidget {
         // anyway. Declared before the row so it stays underneath the icons
         // and leaves their hover tooltips alone.
         WidgetButton {
+          id: cellButton
           anchors.fill: parent
           bar: root.bar
           labelVisible: false
@@ -225,14 +232,17 @@ BarWidget {
             id: numberButton
             Layout.alignment: Qt.AlignVCenter
             bar: root.bar
-            text: cell.modelData === 10 ? "0:" : String(cell.modelData) + ":"
+            // The colon reads as a separator between the number and the icons
+            // that follow it, so an empty workspace has nothing to separate -
+            // drop it and tighten the box to match the shorter label.
+            text: (cell.modelData === 10 ? "0" : String(cell.modelData)) + (cell.occupied ? ":" : "")
             foreground: root.bar ? root.bar.barForeground : Color.foreground
             useActiveColor: false
             fontSize: Style.font.body - 4
             opacity: cell.occupied || cell.focused ? 1 : 0.5
             horizontalMargin: 6
             verticalPadding: 6
-            fixedWidth: root.vertical ? root.barSize : Style.space(20)
+            fixedWidth: root.vertical ? root.barSize : (cell.occupied ? Style.space(20) : Style.space(15))
             fixedHeight: root.barSize
             onPressed: function() { root.focusWorkspace(cell.modelData) }
           }
