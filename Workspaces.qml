@@ -215,7 +215,18 @@ BarWidget {
             Repeater {
               model: cell.toplevels
 
-              Image {
+              // The bar host lays its own MouseArea over every module slot to
+              // drive widget drag-and-drop, and routes clicks from it into the
+              // WidgetButton it finds in Bar.clickTargets under the cursor. A
+              // plain MouseArea in here is underneath that overlay, so it never
+              // sets the pointer cursor and only ever sees the composed click
+              // the overlay chooses to let through - which it drops entirely
+              // once the pointer drifts past the bar's drag threshold mid-click.
+              // Registering each icon as a WidgetButton puts it in that registry,
+              // so the hand cursor and the click both come from the same path
+              // the workspace numbers already use. Its tooltip wiring replaces
+              // the manual showTooltip/tooltipHovered plumbing too.
+              WidgetButton {
                 id: icon
                 required property var modelData
 
@@ -225,11 +236,6 @@ BarWidget {
                 readonly property bool isAgentWindow: windowClass === "org.omarchy.agent"
                 property string detectedAgentBinary: ""
                 readonly property string windowTitle: modelData.title || ""
-                // Bar.showTooltip() only actually shows the tooltip if the target
-                // exposes a `tooltipHovered` property (see how WidgetButton does
-                // it) - a plain Image has none, so without this the call above
-                // silently no-ops every time.
-                readonly property bool tooltipHovered: hoverArea.containsMouse
 
                 // Unwrap omarchy-launch-tui's "org.omarchy.<binary>" convention
                 // (org.omarchy.agent is handled separately, see isAgentWindow) so
@@ -248,14 +254,26 @@ BarWidget {
                   ? root.agentIconsPath + root.agentIconNameFor(detectedAgentBinary) + ".svg"
                   : ""
 
-                width: cell.iconSize
-                height: cell.iconSize
-                source: overridePath !== "" ? Util.fileUrl(overridePath)
-                  : iconName !== "" ? Quickshell.iconPath(iconName, "application-x-executable") : ""
-                fillMode: Image.PreserveAspectFit
-                asynchronous: true
-                smooth: true
-                visible: status === Image.Ready
+                bar: root.bar
+                labelVisible: false
+                // WidgetButton hides itself unless it has content to paint; the
+                // image is that content, so gate on the image having loaded -
+                // this keeps the old `visible: status === Image.Ready` behaviour.
+                hasVisualContent: image.status === Image.Ready
+                tooltipText: windowTitle
+                fixedWidth: cell.iconSize
+                fixedHeight: cell.iconSize
+                onPressed: function(button) { root.focusWorkspace(cell.modelData) }
+
+                Image {
+                  id: image
+                  anchors.fill: parent
+                  source: icon.overridePath !== "" ? Util.fileUrl(icon.overridePath)
+                    : icon.iconName !== "" ? Quickshell.iconPath(icon.iconName, "application-x-executable") : ""
+                  fillMode: Image.PreserveAspectFit
+                  asynchronous: true
+                  smooth: true
+                }
 
                 Process {
                   running: icon.isAgentWindow && icon.windowPid > 0
@@ -266,16 +284,6 @@ BarWidget {
                       if (trimmed !== "") icon.detectedAgentBinary = trimmed
                     }
                   }
-                }
-
-                MouseArea {
-                  id: hoverArea
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.focusWorkspace(cell.modelData)
-                  onEntered: if (root.bar) root.bar.showTooltip(icon, icon.windowTitle)
-                  onExited: if (root.bar) root.bar.hideTooltip(icon)
                 }
               }
             }
