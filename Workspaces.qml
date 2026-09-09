@@ -314,6 +314,7 @@ BarWidget {
                 readonly property bool isTerminalWindow: root.isTerminalClass(windowClass)
                 readonly property bool agentDetectable: isAgentWindow || isTerminalWindow
                 property string detectedAgentBinary: ""
+                property int ipcDetailRequests: 0
                 readonly property string windowTitle: modelData.title || ""
 
                 // Unwrap omarchy-launch-tui's "org.omarchy.<binary>" convention
@@ -367,7 +368,20 @@ BarWidget {
                   property bool sawAgent: false
 
                   function probe() {
-                    if (running || !icon.agentDetectable || icon.windowPid <= 0) return
+                    // Hyprland's openwindow event carries only address, class and
+                    // title - a window opened after the shell started has no pid and
+                    // no geometry until a full client refresh fills lastIpcObject in.
+                    // Without a pid there is no process tree to walk, so ask for that
+                    // refresh and let a later tick do the work. Bounded, so a window
+                    // that never reports detail cannot spin on it.
+                    if (icon.windowPid <= 0) {
+                      if (icon.ipcDetailRequests < 3) {
+                        icon.ipcDetailRequests++
+                        Hyprland.refreshToplevels()
+                      }
+                      return
+                    }
+                    if (running || !icon.agentDetectable) return
                     sawAgent = false
                     running = true
                   }
@@ -392,7 +406,7 @@ BarWidget {
                   interval: 4000
                   repeat: true
                   triggeredOnStart: true
-                  running: icon.agentDetectable && icon.windowPid > 0
+                  running: icon.agentDetectable || icon.windowPid <= 0
                   onTriggered: agentProbe.probe()
                 }
               }
