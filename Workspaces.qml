@@ -107,6 +107,21 @@ BarWidget {
       + "done; done"
   }
 
+  // A terminal is the one window whose class actively lies about what the user
+  // is looking at: an agent CLI started from the shell keeps the emulator's own
+  // class, so the cell shows a terminal for what is really a Claude session.
+  // Probe these the same way org.omarchy.agent windows are probed, and let the
+  // detected binary - not the class - pick the icon.
+  readonly property var knownTerminalClasses: ["alacritty", "foot", "kitty", "ghostty", "wezterm"]
+
+  function isTerminalClass(appId) {
+    var segments = classSegments(appId)
+    for (var i = 0; i < segments.length; i++) {
+      if (root.knownTerminalClasses.indexOf(segments[i]) !== -1) return true
+    }
+    return false
+  }
+
   // Match a running window back to the same desktop entry the app launcher
   // menu would show for it, so icons stay consistent with the launcher.
   function findDesktopEntry(appId) {
@@ -275,6 +290,8 @@ BarWidget {
                   || (modelData.lastIpcObject && modelData.lastIpcObject.class) || ""
                 readonly property int windowPid: (modelData.lastIpcObject && modelData.lastIpcObject.pid) || 0
                 readonly property bool isAgentWindow: windowClass === "org.omarchy.agent"
+                readonly property bool isTerminalWindow: root.isTerminalClass(windowClass)
+                readonly property bool agentDetectable: isAgentWindow || isTerminalWindow
                 property string detectedAgentBinary: ""
                 readonly property string windowTitle: modelData.title || ""
 
@@ -291,7 +308,10 @@ BarWidget {
                 // the icon name in its .desktop file (e.g. Slack, Obsidian).
                 readonly property var desktopEntry: root.findDesktopEntry(lookupClass)
                 readonly property string iconName: (desktopEntry && desktopEntry.icon) || lookupClass
-                readonly property string overridePath: isAgentWindow
+                // org.omarchy.agent windows are agents by definition, so they take
+                // the mark even before the probe names which one. A terminal only
+                // gives its icon up once a known agent is actually found inside it.
+                readonly property string overridePath: (isAgentWindow || detectedAgentBinary !== "")
                   ? root.agentIconsPath + root.agentIconNameFor(detectedAgentBinary) + ".svg"
                   : ""
 
@@ -316,15 +336,43 @@ BarWidget {
                   smooth: true
                 }
 
+                // Unlike an agent window, a terminal outlives the agent run inside
+                // it, so a single probe at load would pin the wrong mark for the
+                // rest of the window's life. Re-probe on a slow poll, and again the
+                // moment the title changes - a terminal rewrites its title when the
+                // foreground program changes, which is exactly the event of interest.
                 Process {
-                  running: icon.isAgentWindow && icon.windowPid > 0
+                  id: agentProbe
+                  property bool sawAgent: false
+
+                  function probe() {
+                    if (running || !icon.agentDetectable || icon.windowPid <= 0) return
+                    sawAgent = false
+                    running = true
+                  }
+
                   command: ["bash", "-c", root.agentDetectScript(icon.windowPid)]
                   stdout: SplitParser {
                     onRead: function(line) {
                       var trimmed = String(line || "").trim()
-                      if (trimmed !== "") icon.detectedAgentBinary = trimmed
+                      if (trimmed === "") return
+                      agentProbe.sawAgent = true
+                      icon.detectedAgentBinary = trimmed
                     }
                   }
+                  // A run that named nothing means the agent has exited; clearing
+                  // here is what hands the terminal its own icon back.
+                  onExited: if (!agentProbe.sawAgent) icon.detectedAgentBinary = ""
+                }
+
+                onWindowTitleChanged: agentProbe.probe()
+
+                Timer {
+                  interval: 4000
+                  repeat: true
+                  triggeredOnStart: true
+                  running: icon.agentDetectable && icon.windowPid > 0
+                  onTriggered: agentProbe.probe()
                 }
               }
             }
