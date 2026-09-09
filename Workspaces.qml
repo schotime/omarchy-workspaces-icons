@@ -37,6 +37,27 @@ BarWidget {
     root.bar.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\" })"))
   }
 
+  // Hyprland hands a workspace's toplevels back in the order it happens to hold
+  // them, which is creation order until a window is moved, swapped, or pulled in
+  // from another workspace - after that the leftmost tile can be the last icon.
+  // Sort by where each window actually sits instead, columns left to right and
+  // top to bottom within a column, so the icon row reads in the same order as
+  // the windows it stands for.
+  function toplevelPosition(toplevel) {
+    var at = toplevel && toplevel.lastIpcObject ? toplevel.lastIpcObject.at : null
+    return (at && at.length === 2) ? at : [0, 0]
+  }
+
+  function orderedToplevels(list) {
+    var sorted = (list || []).slice()
+    sorted.sort(function(left, right) {
+      var a = root.toplevelPosition(left)
+      var b = root.toplevelPosition(right)
+      return a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1]
+    })
+    return sorted
+  }
+
   // Dot-separated class segments, lowercased (e.g. "md.Obsidian" -> ["md", "obsidian"]).
   function classSegments(value) {
     return String(value || "").toLowerCase().split(".").filter(function(s) { return s.length > 0 })
@@ -195,7 +216,7 @@ BarWidget {
         required property int index
 
         readonly property var workspace: root.workspaceById(modelData)
-        readonly property var toplevels: workspace !== null ? workspace.toplevels.values : []
+        readonly property var toplevels: workspace !== null ? root.orderedToplevels(workspace.toplevels.values) : []
         readonly property bool occupied: toplevels.length > 0
         readonly property bool focused: Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === modelData
         readonly property real iconSize: Style.space(10)
