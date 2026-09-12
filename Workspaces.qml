@@ -19,13 +19,47 @@ BarWidget {
     return null
   }
 
+  // Per-monitor workspaces (~/.config/hypr/workspaces.lua): each monitor owns a
+  // block of workspacesPerMonitor ids, and workspaces.lua keeps a monitor's active workspace
+  // inside its own block, so this bar's block is derived from that.
+  readonly property int workspacesPerMonitor: Number(setting("workspacesPerMonitor", 10))
+
+  // The bar window isn't attached yet when bindings first evaluate, so resolve
+  // this widget's screen name once it is, the same way Bar.qml does.
+  property string screenName: ""
+  function resolveScreen() {
+    var window = root.QsWindow ? root.QsWindow.window : null
+    var name = window && window.screen ? String(window.screen.name || "") : ""
+    if (name !== "") root.screenName = name
+  }
+  Timer {
+    interval: 250
+    repeat: true
+    triggeredOnStart: true
+    running: root.screenName === ""
+    onTriggered: root.resolveScreen()
+  }
+
+  readonly property var monitor: {
+    var values = Hyprland.monitors.values
+    for (var i = 0; i < values.length; i++) {
+      if (values[i].name === root.screenName) return values[i]
+    }
+    return null
+  }
+  readonly property int rangeMin: {
+    var active = monitor && monitor.activeWorkspace ? monitor.activeWorkspace.id : 1
+    return Math.floor((Math.max(active, 1) - 1) / workspacesPerMonitor) * workspacesPerMonitor + 1
+  }
+
   function workspaceIds() {
-    var ids = [1, 2, 3, 4, 5]
+    var ids = []
+    for (var n = 0; n < 5; n++) ids.push(root.rangeMin + n)
     var values = Hyprland.workspaces.values
 
     for (var i = 0; i < values.length; i++) {
       var id = values[i].id
-      if (id > 0 && id <= 10 && ids.indexOf(id) === -1) ids.push(id)
+      if (id >= root.rangeMin && id < root.rangeMin + root.workspacesPerMonitor && ids.indexOf(id) === -1) ids.push(id)
     }
 
     ids.sort(function(left, right) { return left - right })
@@ -34,7 +68,11 @@ BarWidget {
 
   function focusWorkspace(id) {
     if (!root.bar) return
-    root.bar.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\" })"))
+    // Focus this bar's monitor first so a not-yet-created workspace opens here.
+    var focusMonitor = root.monitor
+      ? "hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ monitor = \"" + root.monitor.name + "\" })") + " && "
+      : ""
+    root.bar.run(focusMonitor + "hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\", on_current_monitor = true })"))
   }
 
   // Hyprland hands a workspace's toplevels back in the order it happens to hold
@@ -192,7 +230,7 @@ BarWidget {
   // up the difference. Sizing a seam from what sits either side of it went
   // wrong: it lands on one side of a cell but not the other, so a focused cell
   // on that boundary drew its badge visibly off-centre between its neighbours.
-  readonly property real cellGap: root.vertical ? 0 : Style.space(3)
+  readonly property real cellGap: root.vertical ? 0 : Style.space(2)
   readonly property real cellLeadPad: Math.floor(cellGap / 2)
   readonly property real cellTrailPad: cellGap - cellLeadPad
 
@@ -218,8 +256,12 @@ BarWidget {
         readonly property var workspace: root.workspaceById(modelData)
         readonly property var toplevels: workspace !== null ? root.orderedToplevels(workspace.toplevels.values) : []
         readonly property bool occupied: toplevels.length > 0
-        readonly property bool focused: Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === modelData
-        readonly property real iconSize: Style.space(10)
+        readonly property bool focused: root.monitor && root.monitor.activeWorkspace
+          ? root.monitor.activeWorkspace.id === modelData
+          : Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === modelData
+        // 10px icons are too few pixels to read on a 1x screen; HiDPI screens
+        // already get more physical pixels from the same logical size.
+        readonly property real iconSize: Style.space(Screen.devicePixelRatio < 1.25 ? 12 : 10)
         readonly property real leadPad: index === 0 ? 0 : root.cellLeadPad
         readonly property real trailPad: index === root.workspaceIds().length - 1
           ? 0 : root.cellTrailPad
@@ -268,17 +310,17 @@ BarWidget {
             id: numberButton
             Layout.alignment: Qt.AlignVCenter
             bar: root.bar
-            // The colon reads as a separator between the number and the icons
-            // that follow it, so an empty workspace has nothing to separate -
-            // drop it and tighten the box to match the shorter label.
-            text: (cell.modelData === 10 ? "0" : String(cell.modelData)) + (cell.occupied ? ":" : "")
+            text: {
+              var slot = cell.modelData - root.rangeMin + 1
+              return slot === 10 ? "0" : String(slot)
+            }
             foreground: root.bar ? root.bar.barForeground : Color.foreground
             useActiveColor: false
-            fontSize: Style.font.body - 4
+            fontSize: Math.round(Style.font.body * 0.8)
             opacity: cell.occupied || cell.focused ? 1 : 0.5
             horizontalMargin: 6
             verticalPadding: 6
-            fixedWidth: root.vertical ? root.barSize : (cell.occupied ? Style.space(20) : Style.space(15))
+            fixedWidth: root.vertical ? root.barSize : Style.space(14)
             fixedHeight: root.barSize
             onPressed: function() { root.focusWorkspace(cell.modelData) }
           }
@@ -351,6 +393,10 @@ BarWidget {
                 Image {
                   id: image
                   anchors.fill: parent
+                  // Rasterize at the on-screen pixel size, like the tray and menu do;
+                  // otherwise icons load at native size and get crushed down to ~10px.
+                  sourceSize.width: cell.iconSize * Screen.devicePixelRatio
+                  sourceSize.height: cell.iconSize * Screen.devicePixelRatio
                   source: icon.overridePath !== "" ? Util.fileUrl(icon.overridePath)
                     : icon.iconName !== "" ? Quickshell.iconPath(icon.iconName, "application-x-executable") : ""
                   fillMode: Image.PreserveAspectFit
