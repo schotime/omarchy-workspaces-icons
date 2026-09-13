@@ -75,6 +75,91 @@ BarWidget {
     root.bar.run(focusMonitor + "hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\", on_current_monitor = true })"))
   }
 
+  // Window detail (pid, geometry, class) comes from this widget's own
+  // `hyprctl -j clients` snapshot, never Hyprland.refreshToplevels(). Quickshell's
+  // refresh only ever adds toplevels: when a window closes while that request is
+  // in flight, the reply re-creates it after its closewindow event has already
+  // removed it, and nothing removes it again. Asking for detail the moment each
+  // window opened is exactly when short-lived windows close, so the bar collected
+  // ghost icons. The snapshot is also the record of which windows really exist,
+  // so ghosts left behind by anything else stay hidden too.
+  property var clients: ({})
+  property bool clientsLoaded: false
+  property string clientsSignature: ""
+  property bool clientsRefetch: false
+
+  // Events that can add, remove, move or re-tile a window. Focus changes are in
+  // because a swap or resize emits nothing of its own, but is usually followed by one.
+  readonly property var clientEvents: ["openwindow", "closewindow", "movewindowv2", "changefloatingmode", "fullscreen", "activewindowv2", "configreloaded"]
+
+  function fetchClients() {
+    if (clientsProc.running) {
+      root.clientsRefetch = true
+      return
+    }
+    clientsProc.running = true
+  }
+
+  function applyClients(text) {
+    var list
+    try { list = JSON.parse(String(text || "")) } catch (e) { return }
+    if (!Array.isArray(list)) return
+
+    var map = {}
+    var signature = []
+    for (var i = 0; i < list.length; i++) {
+      var client = list[i]
+      // Quickshell's toplevel.address is bare lowercase hex; hyprctl prefixes 0x.
+      var address = String(client.address || "").replace(/^0x/, "").toLowerCase()
+      if (address === "") continue
+      map[address] = client
+      signature.push([address, client.pid, client.class, client.at, client.workspace ? client.workspace.id : ""].join(":"))
+    }
+
+    root.clientsLoaded = true
+    // Every new model array rebuilds the icon row, so only publish a snapshot
+    // that changed something the row reads.
+    var joined = signature.sort().join("|")
+    if (joined === root.clientsSignature) return
+    root.clientsSignature = joined
+    root.clients = map
+  }
+
+  function clientFor(toplevel) {
+    if (!toplevel || !toplevel.address) return null
+    return root.clients[String(toplevel.address).toLowerCase()] || null
+  }
+
+  Process {
+    id: clientsProc
+    command: ["hyprctl", "-j", "clients"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyClients(text)
+    }
+    // An event that landed mid-request may describe a window this reply predates.
+    onExited: {
+      if (!root.clientsRefetch) return
+      root.clientsRefetch = false
+      clientsDebounce.restart()
+    }
+  }
+
+  Timer {
+    id: clientsDebounce
+    interval: 50
+    onTriggered: root.fetchClients()
+  }
+
+  Connections {
+    target: Hyprland
+    function onRawEvent(event) {
+      if (event && root.clientEvents.indexOf(String(event.name)) !== -1) clientsDebounce.restart()
+    }
+  }
+
+  Component.onCompleted: root.fetchClients()
+
   // Hyprland hands a workspace's toplevels back in the order it happens to hold
   // them, which is creation order until a window is moved, swapped, or pulled in
   // from another workspace - after that the leftmost tile can be the last icon.
@@ -82,12 +167,17 @@ BarWidget {
   // top to bottom within a column, so the icon row reads in the same order as
   // the windows it stands for.
   function toplevelPosition(toplevel) {
-    var at = toplevel && toplevel.lastIpcObject ? toplevel.lastIpcObject.at : null
+    var client = root.clientFor(toplevel)
+    var at = client ? client.at : null
     return (at && at.length === 2) ? at : [0, 0]
   }
 
+  // Until the first snapshot lands every toplevel shows; after that, only the
+  // ones Hyprland still reports.
   function orderedToplevels(list) {
-    var sorted = (list || []).slice()
+    var sorted = (list || []).slice().filter(function(toplevel) {
+      return !root.clientsLoaded || root.clientFor(toplevel) !== null
+    })
     sorted.sort(function(left, right) {
       var a = root.toplevelPosition(left)
       var b = root.toplevelPosition(right)
@@ -379,16 +469,16 @@ BarWidget {
                 id: icon
                 required property var modelData
 
+                readonly property var hyprClient: root.clientFor(modelData)
                 readonly property string windowClass: (modelData.wayland && modelData.wayland.appId)
-                  || (modelData.lastIpcObject && modelData.lastIpcObject.class) || ""
-                readonly property int windowPid: (modelData.lastIpcObject && modelData.lastIpcObject.pid) || 0
+                  || (hyprClient && hyprClient.class) || ""
+                readonly property int windowPid: (hyprClient && hyprClient.pid) || 0
                 readonly property bool isAgentWindow: windowClass === "org.omarchy.agent"
                 readonly property bool isTerminalWindow: root.isTerminalClass(windowClass)
                 readonly property bool agentDetectable: isAgentWindow || isTerminalWindow
                 property string detectedAgentBinary: ""
                 // Program in the foreground of a terminal window (see windowProbeScript).
                 property string foregroundBinary: ""
-                property int ipcDetailRequests: 0
                 readonly property string windowTitle: modelData.title || ""
 
                 // Unwrap omarchy-launch-tui's "org.omarchy.<binary>" convention
@@ -458,18 +548,10 @@ BarWidget {
 
                   function probe() {
                     // Hyprland's openwindow event carries only address, class and
-                    // title - a window opened after the shell started has no pid and
-                    // no geometry until a full client refresh fills lastIpcObject in.
-                    // Without a pid there is no process tree to walk, so ask for that
-                    // refresh and let a later tick do the work. Bounded, so a window
-                    // that never reports detail cannot spin on it.
-                    if (icon.windowPid <= 0) {
-                      if (icon.ipcDetailRequests < 3) {
-                        icon.ipcDetailRequests++
-                        Hyprland.refreshToplevels()
-                      }
-                      return
-                    }
+                    // title, so a freshly opened window has no pid until the next
+                    // clients snapshot covers it. onWindowPidChanged probes again
+                    // the moment it does.
+                    if (icon.windowPid <= 0) return
                     if (running || !icon.agentDetectable) return
                     sawAgent = false
                     sawForeground = false
@@ -498,12 +580,13 @@ BarWidget {
                 }
 
                 onWindowTitleChanged: agentProbe.probe()
+                onWindowPidChanged: agentProbe.probe()
 
                 Timer {
                   interval: 4000
                   repeat: true
                   triggeredOnStart: true
-                  running: icon.agentDetectable || icon.windowPid <= 0
+                  running: icon.agentDetectable
                   onTriggered: agentProbe.probe()
                 }
               }
