@@ -155,15 +155,27 @@ BarWidget {
 
   // Descend up to 5 levels of children from the window's PID looking for a
   // known agent binary (the window's own PID is usually the terminal
-  // emulator's, with the agent CLI running as its child/grandchild).
-  function agentDetectScript(pid) {
-    return "frontier=" + pid + "; for d in 1 2 3 4 5; do "
+  // emulator's, with the agent CLI running as its child/grandchild), printing
+  // "agent:<binary>" on a hit. Otherwise, for a plain terminal, print
+  // "fg:<binary>" for the program in the foreground of its tty - the process
+  // group the shell handed the terminal to - so any TUI can supply its icon.
+  function windowProbeScript(pid, checkForeground) {
+    var agentWalk = "frontier=" + pid + "; for d in 1 2 3 4 5; do "
       + "frontier=$(pgrep -P \"$frontier\" | tr '\\n' ',' | sed 's/,$//'); "
       + "[ -z \"$frontier\" ] && break; "
       + "for p in $(echo \"$frontier\" | tr ',' ' '); do "
       + "c=$(ps -o comm= -p \"$p\" 2>/dev/null); "
-      + "case \"$c\" in " + root.knownAgentBinaries.join("|") + ") echo \"$c\"; exit 0;; esac; "
+      + "case \"$c\" in " + root.knownAgentBinaries.join("|") + ") echo \"agent:$c\"; exit 0;; esac; "
       + "done; done"
+    if (!checkForeground) return agentWalk
+    // comm is capped at 15 characters, so names that long fall back to argv[0].
+    return agentWalk + "; for p in $(pgrep -P " + pid + "); do "
+      + "fg=$(ps -o tpgid= -p \"$p\" 2>/dev/null | tr -d ' '); "
+      + "[ -n \"$fg\" ] && [ \"$fg\" -gt 0 ] || continue; "
+      + "c=$(ps -o comm= -p \"$fg\" 2>/dev/null); "
+      + "[ ${#c} -ge 15 ] && c=$(basename -- \"$(ps -o args= -p \"$fg\" | awk '{print $1}')\"); "
+      + "[ -n \"$c\" ] && { echo \"fg:$c\"; exit 0; }; "
+      + "done"
   }
 
   // A terminal is the one window whose class actively lies about what the user
@@ -172,6 +184,10 @@ BarWidget {
   // Probe these the same way org.omarchy.agent windows are probed, and let the
   // detected binary - not the class - pick the icon.
   readonly property var knownTerminalClasses: ["alacritty", "foot", "kitty", "ghostty", "wezterm"]
+
+  // An idle terminal's foreground program is its shell, and some icon themes
+  // ship a "bash" or "fish" icon that would otherwise replace the terminal's own.
+  readonly property var knownShells: ["bash", "zsh", "fish", "sh", "dash", "nu", "ksh", "tcsh", "csh", "elvish", "xonsh"]
 
   function isTerminalClass(appId) {
     var segments = classSegments(appId)
@@ -215,6 +231,20 @@ BarWidget {
     }
 
     return DesktopEntries.byId(appId) || DesktopEntries.heuristicLookup(appId) || null
+  }
+
+  // Exact-only lookup for a program found inside a terminal. Binary names are
+  // short and generic (git, less, top), so the segment, hostname and heuristic
+  // passes above would too often hand them an unrelated app's icon.
+  function findExactDesktopEntry(binary) {
+    if (!binary) return null
+
+    var lower = binary.toLowerCase()
+    var values = DesktopEntries.applications.values || []
+    for (var i = 0; i < values.length; i++) {
+      if (String(values[i].startupClass || "").toLowerCase() === lower) return values[i]
+    }
+    return DesktopEntries.byId(binary) || null
   }
 
   readonly property real trailingGap: root.vertical ? 0 : Style.spaceReal(1.5)
@@ -356,6 +386,8 @@ BarWidget {
                 readonly property bool isTerminalWindow: root.isTerminalClass(windowClass)
                 readonly property bool agentDetectable: isAgentWindow || isTerminalWindow
                 property string detectedAgentBinary: ""
+                // Program in the foreground of a terminal window (see windowProbeScript).
+                property string foregroundBinary: ""
                 property int ipcDetailRequests: 0
                 readonly property string windowTitle: modelData.title || ""
 
@@ -378,6 +410,15 @@ BarWidget {
                 readonly property string overridePath: (isAgentWindow || detectedAgentBinary !== "")
                   ? root.agentIconsPath + root.agentIconNameFor(detectedAgentBinary) + ".svg"
                   : ""
+                // A terminal running any other program takes that program's icon: an
+                // exactly matching desktop entry's icon first, else a theme icon named
+                // after the binary. Shells, and programs with neither, leave the
+                // terminal's own icon.
+                readonly property string foregroundIconPath: {
+                  if (foregroundBinary === "" || root.knownShells.indexOf(foregroundBinary) !== -1) return ""
+                  var entry = root.findExactDesktopEntry(foregroundBinary)
+                  return Quickshell.iconPath((entry && entry.icon) || foregroundBinary, true)
+                }
 
                 bar: root.bar
                 labelVisible: false
@@ -398,6 +439,7 @@ BarWidget {
                   sourceSize.width: cell.iconSize * Screen.devicePixelRatio
                   sourceSize.height: cell.iconSize * Screen.devicePixelRatio
                   source: icon.overridePath !== "" ? Util.fileUrl(icon.overridePath)
+                    : icon.foregroundIconPath !== "" ? icon.foregroundIconPath
                     : icon.iconName !== "" ? Quickshell.iconPath(icon.iconName, "application-x-executable") : ""
                   fillMode: Image.PreserveAspectFit
                   asynchronous: true
@@ -412,6 +454,7 @@ BarWidget {
                 Process {
                   id: agentProbe
                   property bool sawAgent: false
+                  property bool sawForeground: false
 
                   function probe() {
                     // Hyprland's openwindow event carries only address, class and
@@ -429,21 +472,29 @@ BarWidget {
                     }
                     if (running || !icon.agentDetectable) return
                     sawAgent = false
+                    sawForeground = false
                     running = true
                   }
 
-                  command: ["bash", "-c", root.agentDetectScript(icon.windowPid)]
+                  command: ["bash", "-c", root.windowProbeScript(icon.windowPid, icon.isTerminalWindow)]
                   stdout: SplitParser {
                     onRead: function(line) {
                       var trimmed = String(line || "").trim()
-                      if (trimmed === "") return
-                      agentProbe.sawAgent = true
-                      icon.detectedAgentBinary = trimmed
+                      if (trimmed.indexOf("agent:") === 0) {
+                        agentProbe.sawAgent = true
+                        icon.detectedAgentBinary = trimmed.slice("agent:".length)
+                      } else if (trimmed.indexOf("fg:") === 0) {
+                        agentProbe.sawForeground = true
+                        icon.foregroundBinary = trimmed.slice("fg:".length)
+                      }
                     }
                   }
-                  // A run that named nothing means the agent has exited; clearing
+                  // A run that named nothing means the program has exited; clearing
                   // here is what hands the terminal its own icon back.
-                  onExited: if (!agentProbe.sawAgent) icon.detectedAgentBinary = ""
+                  onExited: {
+                    if (!agentProbe.sawAgent) icon.detectedAgentBinary = ""
+                    if (!agentProbe.sawForeground) icon.foregroundBinary = ""
+                  }
                 }
 
                 onWindowTitleChanged: agentProbe.probe()
