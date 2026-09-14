@@ -5,9 +5,11 @@ An [Omarchy](https://omarchy.org/) shell bar widget — a fork of the built-in
 next to its workspace number. Click an icon to switch to that window's
 workspace.
 
-This is schotime's fork of
+Based on
 [deda/omarchy-workspaces-icons](https://github.com/deda/omarchy-workspaces-icons),
-adding per-monitor workspaces and program icons for terminals.
+adding per-monitor workspaces and program icons for terminals. It uses its own
+plugin id, `schotime.workspaces-icons`; remove `deda.workspaces-icons` first if
+you have it installed.
 
 ![Preview](preview.png)
 
@@ -21,8 +23,8 @@ omarchy plugin disable omarchy.workspaces
 ## Manual install
 
 ```bash
-git clone https://github.com/schotime/omarchy-workspaces-icons.git ~/.config/omarchy/plugins/deda.workspaces-icons
-omarchy plugin enable deda.workspaces-icons
+git clone https://github.com/schotime/omarchy-workspaces-icons.git ~/.config/omarchy/plugins/schotime.workspaces-icons
+omarchy plugin enable schotime.workspaces-icons
 omarchy plugin disable omarchy.workspaces
 ```
 
@@ -31,7 +33,7 @@ omarchy plugin disable omarchy.workspaces
 Set these on the widget's entry in `~/.config/omarchy/shell.json`:
 
 ```json
-{ "id": "deda.workspaces-icons", "mode": "shared", "workspacesPerMonitor": 10 }
+{ "id": "schotime.workspaces-icons", "mode": "shared", "workspacesPerMonitor": 10 }
 ```
 
 - `mode`
@@ -46,13 +48,13 @@ Set these on the widget's entry in `~/.config/omarchy/shell.json`:
 ## Update
 
 ```bash
-omarchy plugin update deda.workspaces-icons
+omarchy plugin update schotime.workspaces-icons
 ```
 
 ## Remove
 
 ```bash
-omarchy plugin remove deda.workspaces-icons
+omarchy plugin remove schotime.workspaces-icons
 ```
 
 ## License

@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "deda.workspaces-icons",
+  "id": "schotime.workspaces-icons",
   "name": "Workspaces with Window Icons",
-  "version": "1.1.0",
-  "author": "deda, schotime",
+  "version": "2.0.0",
+  "author": "schotime",
   "license": "MIT",
   "description": "Workspace number indicators that also show the icon of each running window on that workspace, clickable to switch",
   "kinds": [
