@@ -141,7 +141,7 @@ BarWidget {
       var address = String(client.address || "").replace(/^0x/, "").toLowerCase()
       if (address === "") continue
       map[address] = client
-      signature.push([address, client.pid, client.class, client.at, client.workspace ? client.workspace.id : ""].join(":"))
+      signature.push([address, client.pid, client.class, client.at, client.workspace ? client.workspace.id : "", client.fullscreen].join(":"))
     }
 
     root.clientsLoaded = true
@@ -156,6 +156,19 @@ BarWidget {
   function clientFor(toplevel) {
     if (!toplevel || !toplevel.address) return null
     return root.clients[String(toplevel.address).toLowerCase()] || null
+  }
+
+  // Hyprland's fullscreen modes: 0 none, 1 maximized (SUPER+ALT+F "Full width"),
+  // 2 fullscreen (SUPER+F). Only the maximized variant is flagged; true
+  // fullscreen already hides the bar, so there'd be nothing to see.
+  readonly property int maximizedMode: 1
+
+  function workspaceMaximized(id) {
+    for (var address in root.clients) {
+      var client = root.clients[address]
+      if (client.workspace && client.workspace.id === id && client.fullscreen === root.maximizedMode) return true
+    }
+    return false
   }
 
   Process {
@@ -404,6 +417,7 @@ BarWidget {
         readonly property var workspace: root.workspaceById(modelData)
         readonly property var toplevels: workspace !== null ? root.orderedToplevels(workspace.toplevels.values) : []
         readonly property bool occupied: toplevels.length > 0
+        readonly property bool maximized: root.workspaceMaximized(modelData)
         readonly property bool focused: root.monitor && root.monitor.activeWorkspace
           ? root.monitor.activeWorkspace.id === modelData
           : Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === modelData
@@ -418,9 +432,16 @@ BarWidget {
         implicitHeight: row.implicitHeight
 
         Rectangle {
-          anchors.centerIn: row
-          width: row.implicitWidth - Style.space(4)
-          height: Math.min(parent.height, cell.iconSize + Style.space(4))
+          // Sized to the maximized outline's box (which keeps its geometry while
+          // hidden), so the outline always sits flush on the badge with no gap.
+          readonly property real normalLeft: row.x + Style.space(2)
+          readonly property real outlineLeft: row.x + numberButton.x + maximizedOutline.x
+          readonly property real badgeRight: row.x + row.implicitWidth - Style.space(2)
+          anchors.verticalCenter: row.verticalCenter
+          x: Math.min(normalLeft, outlineLeft)
+          // Grow the right edge by the same amount the left edge reached out.
+          width: badgeRight + (normalLeft - x) - x
+          height: Math.max(maximizedOutline.height, Math.min(parent.height, cell.iconSize + Style.space(4)))
           radius: Style.space(3)
           // Upstream paints this solid. Route it through the same fill system
           // every other control uses so it follows `selected-fill-alpha` from
@@ -457,6 +478,8 @@ BarWidget {
           WidgetButton {
             id: numberButton
             Layout.alignment: Qt.AlignVCenter
+            // The maximized outline spills past the button, so push the icons clear of it.
+            Layout.rightMargin: cell.maximized && icons.visible ? Style.space(4) : 0
             bar: root.bar
             text: {
               var slot = cell.modelData - root.rangeMin + 1
@@ -471,6 +494,23 @@ BarWidget {
             fixedWidth: root.vertical ? root.barSize : Style.space(14)
             fixedHeight: root.barSize
             onPressed: function() { root.focusWorkspace(cell.modelData) }
+
+            // Outline the number while a window on this workspace is maximized.
+            Rectangle {
+              id: maximizedOutline
+              anchors.centerIn: parent
+              // Allowed to spill past the button's fixed width into the cell gap,
+              // so the number gets breathing room without shifting the layout.
+              width: numberButton.labelWidth + Style.space(10)
+              height: Math.min(parent.height, cell.iconSize + Style.space(7))
+              radius: Style.space(3)
+              color: "transparent"
+              border.width: Math.max(1, Style.space(1))
+              // Neutral: the bar's own text colour, softened.
+              readonly property color tint: root.bar ? root.bar.barForeground : Color.foreground
+              border.color: Qt.rgba(tint.r, tint.g, tint.b, 0.55)
+              visible: cell.maximized
+            }
           }
 
           Row {
