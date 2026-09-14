@@ -19,10 +19,18 @@ BarWidget {
     return null
   }
 
-  // Per-monitor workspaces (~/.config/hypr/workspaces.lua): each monitor owns a
-  // block of workspacesPerMonitor ids, and workspaces.lua keeps a monitor's active workspace
-  // inside its own block, so this bar's block is derived from that.
-  readonly property int workspacesPerMonitor: Number(setting("workspacesPerMonitor", 10))
+  // How workspace ids map onto monitors, set with "mode" on this widget's entry
+  // in ~/.config/omarchy/shell.json:
+  //   "blocks" - each monitor owns its own block of workspacesPerMonitor ids
+  //              (1-10, 11-20, ...), as ~/.config/hypr/workspaces.lua sets up.
+  //              This bar's block is derived from the workspace its monitor is
+  //              showing, and cells are labelled by slot within the block.
+  //   "shared" - every monitor draws from the same 1..workspacesPerMonitor ids,
+  //              as stock Omarchy does. This bar lists the ones on its own
+  //              monitor under their real numbers.
+  readonly property bool sharedMode: String(setting("mode", "blocks")) === "shared"
+  readonly property int workspacesPerMonitor: Math.max(1, Number(setting("workspacesPerMonitor", 10)))
+  readonly property int placeholderCount: Math.min(5, workspacesPerMonitor)
 
   // The bar window isn't attached yet when bindings first evaluate, so resolve
   // this widget's screen name once it is, the same way Bar.qml does.
@@ -48,18 +56,31 @@ BarWidget {
     return null
   }
   readonly property int rangeMin: {
+    if (sharedMode) return 1
     var active = monitor && monitor.activeWorkspace ? monitor.activeWorkspace.id : 1
     return Math.floor((Math.max(active, 1) - 1) / workspacesPerMonitor) * workspacesPerMonitor + 1
   }
 
+  // Until the bar's monitor resolves, treat every workspace as this bar's.
+  function onThisMonitor(workspace) {
+    return !root.monitor || !workspace.monitor || workspace.monitor.name === root.monitor.name
+  }
+
   function workspaceIds() {
     var ids = []
-    for (var n = 0; n < 5; n++) ids.push(root.rangeMin + n)
+    for (var n = 0; n < root.placeholderCount; n++) {
+      var placeholder = root.workspaceById(root.rangeMin + n)
+      // A shared id already open on another monitor belongs to that monitor's bar.
+      if (root.sharedMode && placeholder && !root.onThisMonitor(placeholder)) continue
+      ids.push(root.rangeMin + n)
+    }
     var values = Hyprland.workspaces.values
 
     for (var i = 0; i < values.length; i++) {
       var id = values[i].id
-      if (id >= root.rangeMin && id < root.rangeMin + root.workspacesPerMonitor && ids.indexOf(id) === -1) ids.push(id)
+      if (id < root.rangeMin || id >= root.rangeMin + root.workspacesPerMonitor || ids.indexOf(id) !== -1) continue
+      if (root.sharedMode && !root.onThisMonitor(values[i])) continue
+      ids.push(id)
     }
 
     ids.sort(function(left, right) { return left - right })
@@ -68,6 +89,13 @@ BarWidget {
 
   function focusWorkspace(id) {
     if (!root.bar) return
+    // A shared workspace that moved to another monitor since this bar last drew
+    // is switched to where it is rather than pulled onto this monitor.
+    var workspace = root.workspaceById(id)
+    if (root.sharedMode && workspace && !root.onThisMonitor(workspace)) {
+      root.bar.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\" })"))
+      return
+    }
     // Focus this bar's monitor first so a not-yet-created workspace opens here.
     var focusMonitor = root.monitor
       ? "hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ monitor = \"" + root.monitor.name + "\" })") + " && "

@@ -3,7 +3,7 @@
   "id": "deda.workspaces-icons",
   "name": "Workspaces with Window Icons",
   "version": "1.1.0",
-  "author": "deda",
+  "author": "deda, schotime",
   "license": "MIT",
   "description": "Workspace number indicators that also show the icon of each running window on that workspace, clickable to switch",
   "kinds": [
