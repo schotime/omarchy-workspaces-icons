@@ -103,6 +103,27 @@ BarWidget {
     root.bar.run(focusMonitor + "hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\", on_current_monitor = true })"))
   }
 
+  // Clicking an icon normally only focuses its workspace: the window it stands
+  // for is already on screen in the tiling layout, so there's nothing more to
+  // reveal. While one window on that workspace is maximized (the outlined
+  // state) the rest sit hidden behind it, and the icon is the only handle on
+  // them - so focus that window instead, which brings it to the front.
+  //
+  // Focusing it warps the pointer to its centre, which would yank the
+  // cursor off the bar the click came from. `cursor:no_warps` is what suppresses
+  // that, so flip it around the dispatch and put it back - the same thing
+  // ~/.config/hypr/workspaces.lua does around its own scripted focus. It takes a
+  // Lua `eval` rather than `keyword`, which a Lua config has no parser for.
+  function focusWindow(toplevel) {
+    if (!root.bar || !toplevel || !toplevel.address) return
+    var address = "address:0x" + String(toplevel.address).toLowerCase()
+    var lua = 'local warps = hl.get_config("cursor.no_warps")'
+      + ' hl.config({ cursor = { no_warps = true } })'
+      + ' hl.dispatch(hl.dsp.focus({ window = "' + address + '" }))'
+      + ' hl.config({ cursor = { no_warps = warps } })'
+    root.bar.run("hyprctl eval " + Util.shellQuote(lua))
+  }
+
   // Window detail (pid, geometry, class) comes from this widget's own
   // `hyprctl -j clients` snapshot, never Hyprland.refreshToplevels(). Quickshell's
   // refresh only ever adds toplevels: when a window closes while that request is
@@ -112,6 +133,13 @@ BarWidget {
   // ghost icons. The snapshot is also the record of which windows really exist,
   // so ghosts left behind by anything else stay hidden too.
   property var clients: ({})
+  // Where each window sits for ordering purposes, by address. A maximized
+  // window reports its monitor's origin instead of its tile, so every window
+  // maximized on a workspace claims the same spot and the icon row reshuffles
+  // on nothing - the tiling layout underneath never moved. Keep the last
+  // position each window had while tiled and order by that instead. Rebuilt
+  // from each snapshot, so closed windows drop out.
+  property var tiledPositions: ({})
   property bool clientsLoaded: false
   property string clientsSignature: ""
   property bool clientsRefetch: false
@@ -134,6 +162,7 @@ BarWidget {
     if (!Array.isArray(list)) return
 
     var map = {}
+    var positions = {}
     var signature = []
     for (var i = 0; i < list.length; i++) {
       var client = list[i]
@@ -141,8 +170,12 @@ BarWidget {
       var address = String(client.address || "").replace(/^0x/, "").toLowerCase()
       if (address === "") continue
       map[address] = client
-      signature.push([address, client.pid, client.class, client.at, client.workspace ? client.workspace.id : "", client.fullscreen].join(":"))
+      var at = (client.at && client.at.length === 2) ? client.at : [0, 0]
+      var remembered = root.tiledPositions[address]
+      positions[address] = (client.fullscreen > 0 && remembered) ? remembered : at
+      signature.push([address, client.pid, client.class, positions[address], client.workspace ? client.workspace.id : "", client.fullscreen].join(":"))
     }
+    root.tiledPositions = positions
 
     root.clientsLoaded = true
     // Every new model array rebuilds the icon row, so only publish a snapshot
@@ -208,8 +241,8 @@ BarWidget {
   // top to bottom within a column, so the icon row reads in the same order as
   // the windows it stands for.
   function toplevelPosition(toplevel) {
-    var client = root.clientFor(toplevel)
-    var at = client ? client.at : null
+    if (!toplevel || !toplevel.address) return [0, 0]
+    var at = root.tiledPositions[String(toplevel.address).toLowerCase()]
     return (at && at.length === 2) ? at : [0, 0]
   }
 
@@ -398,6 +431,24 @@ BarWidget {
   implicitWidth: grid.implicitWidth + trailingGap
   implicitHeight: grid.implicitHeight
 
+  // A double click on empty bar space toggles the bar's transparency, and one
+  // that lands on a module falls through to it: the bar's slot overlay handles
+  // single clicks and propagates composed events down, and nothing below
+  // claims the double click. Two quick clicks in here are just two clicks -
+  // focus a workspace, or a window twice - so claim it and let it stop.
+  // A MouseArea only accepts a composed event it has a handler for, which is
+  // why an explicit (if empty-bodied) onDoubleClicked is the whole mechanism.
+  MouseArea {
+    anchors.fill: parent
+    acceptedButtons: Qt.LeftButton
+    propagateComposedEvents: true
+    // Single clicks and holds still belong to the bar: it dispatches clicks to
+    // the WidgetButtons in here, and a hold starts a module drag.
+    onClicked: function(mouse) { mouse.accepted = false }
+    onPressAndHold: function(mouse) { mouse.accepted = false }
+    onDoubleClicked: function(mouse) { mouse.accepted = true }
+  }
+
   GridLayout {
     id: grid
     anchors.fill: parent
@@ -423,7 +474,7 @@ BarWidget {
           : Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === modelData
         // 10px icons are too few pixels to read on a 1x screen; HiDPI screens
         // already get more physical pixels from the same logical size.
-        readonly property real iconSize: Style.space(Screen.devicePixelRatio < 1.25 ? 12 : 10)
+        readonly property real iconSize: Math.round(Style.space(Screen.devicePixelRatio < 1.25 ? 12 : 10) * 1.5)
         readonly property real leadPad: index === 0 ? 0 : root.cellLeadPad
         readonly property real trailPad: index === root.workspaceIds().length - 1
           ? 0 : root.cellTrailPad
@@ -587,7 +638,10 @@ BarWidget {
                 tooltipText: windowTitle
                 fixedWidth: cell.iconSize
                 fixedHeight: cell.iconSize
-                onPressed: function(button) { root.focusWorkspace(cell.modelData) }
+                onPressed: function(button) {
+                  if (cell.maximized) root.focusWindow(icon.modelData)
+                  else root.focusWorkspace(cell.modelData)
+                }
 
                 Image {
                   id: image
