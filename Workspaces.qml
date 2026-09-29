@@ -31,6 +31,7 @@ BarWidget {
   readonly property bool sharedMode: String(setting("mode", "blocks")) === "shared"
   readonly property int workspacesPerMonitor: Math.max(1, Number(setting("workspacesPerMonitor", 10)))
   readonly property int placeholderCount: Math.min(5, workspacesPerMonitor)
+  readonly property real activeFillAlpha: Math.max(0, Math.min(1, Number(setting("activeFillAlpha", 0.11))))
 
   // The bar window isn't attached yet when bindings first evaluate, so resolve
   // this widget's screen name once it is, the same way Bar.qml does.
@@ -494,11 +495,13 @@ BarWidget {
           width: badgeRight + (normalLeft - x) - x
           height: Math.max(maximizedOutline.height, Math.min(parent.height, cell.iconSize + Style.space(4)))
           radius: Style.space(3)
-          // Upstream paints this solid. Route it through the same fill system
-          // every other control uses so it follows `selected-fill-alpha` from
-          // ~/.config/omarchy/shell.toml instead of hardcoding an opacity here.
-          // `selected-color` defaults to "foreground", so this stays neutral.
-          color: Style.selectedFillFor(root.bar ? root.bar.barForeground : Color.foreground, Color.accent)
+          // Upstream paints this solid. Take the colour from the same fill system
+          // every other control uses (`selected-color` in
+          // ~/.config/omarchy/shell.toml, "foreground" by default, so it stays
+          // neutral), but with its own opacity: `selected-fill-alpha` there is
+          // shared by every highlight in the shell. Set "activeFillAlpha" on this
+          // widget's entry in shell.json to change just this one.
+          color: Util.alpha(Style.selectedStateColor(root.bar ? root.bar.barForeground : Color.foreground, Color.accent), root.activeFillAlpha)
           visible: cell.focused
         }
 
