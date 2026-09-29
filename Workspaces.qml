@@ -293,7 +293,9 @@ BarWidget {
     if (!execMatch) return ""
     var hostMatch = execMatch[1].match(/^https?:\/\/([^\/]+)/)
     if (!hostMatch) return ""
-    return hostMatch[1].replace(/^www\./, "").toLowerCase()
+    // Chrome leaves the port out of the class it generates, so a self-hosted
+    // app on http://host:8888/ still reports "brave-host__-Default".
+    return hostMatch[1].replace(/:\d+$/, "").replace(/^www\./, "").toLowerCase()
   }
 
   // org.omarchy.agent is a fixed class every coding agent CLI shares (see
