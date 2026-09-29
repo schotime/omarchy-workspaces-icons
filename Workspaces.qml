@@ -475,9 +475,10 @@ BarWidget {
         readonly property bool focused: root.monitor && root.monitor.activeWorkspace
           ? root.monitor.activeWorkspace.id === modelData
           : Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === modelData
-        // 10px icons are too few pixels to read on a 1x screen; HiDPI screens
-        // already get more physical pixels from the same logical size.
-        readonly property real iconSize: Math.round(Style.space(Screen.devicePixelRatio < 1.25 ? 12 : 10) * 1.5)
+        // Scales with the bar's height (size-horizontal in shell.toml), so a
+        // taller bar makes the icons bigger and easier to hit, not just the
+        // gaps around them. 0.58 is what a stock 26px bar used to get.
+        readonly property real iconSize: Math.round(root.barSize * 0.58)
         readonly property real leadPad: index === 0 ? 0 : root.cellLeadPad
         readonly property real trailPad: index === root.workspaceIds().length - 1
           ? 0 : root.cellTrailPad
