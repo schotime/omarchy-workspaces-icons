@@ -414,6 +414,71 @@ BarWidget {
     return DesktopEntries.byId(binary) || null
   }
 
+  // Icons don't agree on how much of their canvas the artwork covers: most run
+  // edge to edge, but some (Orca, foot) leave a transparent margin of ~10% a
+  // side, so at the same box size they draw visibly smaller than their
+  // neighbours. Measure each icon's opaque bounds once and zoom it so the
+  // artwork, not the canvas, covers iconFill of the box. Set "normalizeIcons":
+  // false on this widget's entry in ~/.config/omarchy/shell.json to draw icons
+  // as shipped.
+  readonly property bool normalizeIcons: setting("normalizeIcons", true) !== false
+  // How much of the box every icon's artwork covers once normalized, so a
+  // full-bleed icon and a padded one end up the same size. Set "iconFill" on
+  // this widget's entry to tune it (1 = edge to edge).
+  readonly property real iconFill: Math.max(0.5, Math.min(1, Number(setting("iconFill", 0.85))))
+  // Caps the zoom, so a small glyph on a big empty canvas isn't blown up to mush.
+  readonly property real maxIconZoom: 1.5
+  // Soft drop shadows are faint; only pixels at least this opaque count as artwork.
+  readonly property int iconAlphaThreshold: 64
+  // Measured icon sources -> { zoom, x0, y0, x1, y1 }: the artwork's bounds as
+  // fractions of the icon's square box, before zooming.
+  property var iconBounds: ({})
+
+  function recordIconBounds(source, pixels) {
+    var w = pixels.width, h = pixels.height, data = pixels.data
+    var minX = w, minY = h, maxX = -1, maxY = -1
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        if (data[(y * w + x) * 4 + 3] <= root.iconAlphaThreshold) continue
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
+
+    // An edge rarely lands on a pixel boundary: the outermost row or column is
+    // only partly covered, and its opacity says by how much. Reading that back
+    // puts the edge to a fraction of a pixel, which the bar needs to land it
+    // exactly on a screen pixel at a size ten times smaller.
+    function coverage(fromX, toX, fromY, toY) {
+      var peak = 0
+      for (var cy = fromY; cy <= toY; cy++) {
+        for (var cx = fromX; cx <= toX; cx++) peak = Math.max(peak, data[(cy * w + cx) * 4 + 3])
+      }
+      return peak / 255
+    }
+
+    var bounds = { zoom: 1, x0: 0, y0: 0, x1: 1, y1: 1 }
+    if (maxX >= 0) {
+      var left = minX + 1 - coverage(minX, minX, minY, maxY)
+      var right = maxX + coverage(maxX, maxX, minY, maxY)
+      var top = minY + 1 - coverage(minX, maxX, minY, minY)
+      var bottom = maxY + coverage(minX, maxX, maxY, maxY)
+      // The Image letterboxes a non-square canvas into the square box, so place
+      // the bounds in that box's coordinates before sizing against it.
+      var side = Math.max(w, h)
+      var x0 = ((side - w) / 2 + left) / side, x1 = ((side - w) / 2 + right) / side
+      var y0 = ((side - h) / 2 + top) / side, y1 = ((side - h) / 2 + bottom) / side
+      var zoom = Math.min(root.maxIconZoom, root.iconFill / Math.max(x1 - x0, y1 - y0))
+      bounds = { zoom: zoom, x0: x0, y0: y0, x1: x1, y1: y1 }
+    }
+
+    var next = Object.assign({}, root.iconBounds)
+    next[source] = bounds
+    root.iconBounds = next
+  }
+
   readonly property real trailingGap: root.vertical ? 0 : Style.spaceReal(1.5)
 
   // GridLayout's columnSpacing is dead space: the bar only dispatches a click
@@ -634,6 +699,13 @@ BarWidget {
                   var entry = root.findExactDesktopEntry(foregroundBinary)
                   return Quickshell.iconPath((entry && entry.icon) || foregroundBinary, true)
                 }
+                readonly property string imageSource: overridePath !== "" ? Util.fileUrl(overridePath)
+                  : foregroundIconPath !== "" ? foregroundIconPath
+                  : iconName !== "" ? Quickshell.iconPath(iconName, "application-x-executable") : ""
+                // Until an icon is measured (or with normalizing off) its artwork
+                // is taken to fill the whole box.
+                readonly property var bounds: (root.normalizeIcons && root.iconBounds[imageSource])
+                  || { zoom: 1, x0: 0, y0: 0, x1: 1, y1: 1 }
 
                 bar: root.bar
                 labelVisible: false
@@ -643,7 +715,10 @@ BarWidget {
                 hasVisualContent: image.status === Image.Ready
                 tooltipText: windowTitle
                 fixedWidth: cell.iconSize
-                fixedHeight: cell.iconSize
+                // Full bar height, so the button sits flush with the bar's edges
+                // and the image below can centre itself on the bar, not on
+                // wherever the row layout rounded a shorter box to.
+                fixedHeight: root.barSize
                 onPressed: function(button) {
                   if (cell.maximized) root.focusWindow(icon.modelData)
                   else root.focusWorkspace(cell.modelData)
@@ -651,17 +726,85 @@ BarWidget {
 
                 Image {
                   id: image
-                  anchors.fill: parent
-                  // Rasterize at the on-screen pixel size, like the tray and menu do;
-                  // otherwise icons load at native size and get crushed down to ~10px.
-                  sourceSize.width: cell.iconSize * Screen.devicePixelRatio
-                  sourceSize.height: cell.iconSize * Screen.devicePixelRatio
-                  source: icon.overridePath !== "" ? Util.fileUrl(icon.overridePath)
-                    : icon.foregroundIconPath !== "" ? icon.foregroundIconPath
-                    : icon.iconName !== "" ? Quickshell.iconPath(icon.iconName, "application-x-executable") : ""
+                  // Drawn at exactly its on-screen pixel size, starting on a whole
+                  // screen pixel, so the texture maps 1:1 onto the screen. Anything
+                  // else gets resampled on the way, and a thin edge like foot's frame
+                  // smears into a dim extra row: the icon then reads a pixel taller
+                  // than it is wide and sits a pixel off-centre in the bar.
+                  // The bar window renders at the monitor's own (fractional) scale,
+                  // so that is the pixel grid to land on.
+                  readonly property real dpr: root.monitor && root.monitor.scale > 0 ? root.monitor.scale : Screen.devicePixelRatio
+                  readonly property int barPx: Math.round(root.barSize * dpr)
+
+                  function misalignment(edge) { return Math.abs(edge - Math.round(edge)) }
+
+                  // A whole-pixel size near the intended one, picked so the artwork's
+                  // own edges (which sit inside the canvas at fractional offsets)
+                  // also fall on pixel boundaries, and so what the artwork leaves of
+                  // the bar's height splits evenly above and below it.
+                  readonly property int sidePx: {
+                    var b = icon.bounds
+                    var target = cell.iconSize * b.zoom * dpr
+                    var best = Math.max(1, Math.round(target)), bestCost = Infinity
+                    for (var px = Math.max(1, Math.floor(target) - 1); px <= Math.ceil(target) + 1; px++) {
+                      var height = Math.round(b.y1 * px) - Math.round(b.y0 * px)
+                      var cost = misalignment(b.x0 * px) + misalignment(b.x1 * px)
+                        + misalignment(b.y0 * px) + misalignment(b.y1 * px)
+                        + ((barPx - height) % 2 !== 0 ? 0.5 : 0)
+                        + Math.abs(px - target) * 0.25
+                      if (cost < bestCost) { best = px; bestCost = cost }
+                    }
+                    return best
+                  }
+                  readonly property int artTopPx: Math.round(icon.bounds.y0 * sidePx)
+                  readonly property int artHeightPx: Math.round(icon.bounds.y1 * sidePx) - artTopPx
+
+                  // The row lays icons out on whole logical pixels, which fall
+                  // between screen pixels at a fractional scale, so snap against
+                  // where the button really sits. The reads of each ancestor's x
+                  // are only there to re-run this on relayout.
+                  readonly property real originX: {
+                    icon.x; icons.x; row.x; cell.x; grid.x; root.x
+                    return icon.mapToItem(null, 0, 0).x
+                  }
+                  x: Math.round((originX + cell.iconSize / 2) * dpr - (icon.bounds.x0 + icon.bounds.x1) * sidePx / 2) / dpr - originX
+                  y: (Math.floor((barPx - artHeightPx) / 2) - artTopPx) / dpr
+                  width: sidePx / dpr
+                  height: sidePx / dpr
+                  sourceSize.width: sidePx
+                  sourceSize.height: sidePx
+                  source: icon.imageSource
                   fillMode: Image.PreserveAspectFit
                   asynchronous: true
                   smooth: true
+                }
+
+                // Reads the icon's pixels to find its opaque bounds. Canvas is the
+                // only QML type that exposes pixel data; createImageData hands back
+                // the loaded image itself, so this never needs to paint anything.
+                Canvas {
+                  id: boundsProbe
+                  width: 1
+                  height: 1
+                  opacity: 0
+                  readonly property string target: root.normalizeIcons && icon.imageSource !== ""
+                    && !root.iconBounds[icon.imageSource] ? icon.imageSource : ""
+
+                  function measure() {
+                    if (target === "") return
+                    if (isImageLoaded(target)) requestPaint()
+                    else loadImage(target)
+                  }
+
+                  onTargetChanged: measure()
+                  Component.onCompleted: measure()
+                  onImageLoaded: requestPaint()
+                  onPaint: {
+                    var source = target
+                    if (source === "" || !isImageLoaded(source)) return
+                    root.recordIconBounds(source, getContext("2d").createImageData(source))
+                    unloadImage(source)
+                  }
                 }
 
                 // Unlike an agent window, a terminal outlives the agent run inside
