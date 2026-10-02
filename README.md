@@ -3,7 +3,8 @@
 An [Omarchy](https://omarchy.org/) shell bar widget — a fork of the built-in
 `omarchy.workspaces` widget that also shows the icon of each running window
 next to its workspace number. Click an icon to switch to that window's
-workspace.
+workspace (on a scrolling workspace it also scrolls the window into view), or
+right-click it for a menu to close that window.
 
 Based on
 [deda/omarchy-workspaces-icons](https://github.com/deda/omarchy-workspaces-icons),

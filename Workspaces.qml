@@ -88,20 +88,22 @@ BarWidget {
     return ids
   }
 
-  function focusWorkspace(id) {
-    if (!root.bar) return
+  function focusWorkspaceCommand(id) {
     // A shared workspace that moved to another monitor since this bar last drew
     // is switched to where it is rather than pulled onto this monitor.
     var workspace = root.workspaceById(id)
-    if (root.sharedMode && workspace && !root.onThisMonitor(workspace)) {
-      root.bar.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\" })"))
-      return
-    }
+    if (root.sharedMode && workspace && !root.onThisMonitor(workspace))
+      return "hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\" })")
     // Focus this bar's monitor first so a not-yet-created workspace opens here.
     var focusMonitor = root.monitor
       ? "hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ monitor = \"" + root.monitor.name + "\" })") + " && "
       : ""
-    root.bar.run(focusMonitor + "hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\", on_current_monitor = true })"))
+    return focusMonitor + "hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\", on_current_monitor = true })")
+  }
+
+  function focusWorkspace(id) {
+    if (!root.bar) return
+    root.bar.run(root.focusWorkspaceCommand(id))
   }
 
   // Clicking an icon normally only focuses its workspace: the window it stands
@@ -115,14 +117,55 @@ BarWidget {
   // that, so flip it around the dispatch and put it back - the same thing
   // ~/.config/hypr/workspaces.lua does around its own scripted focus. It takes a
   // Lua `eval` rather than `keyword`, which a Lua config has no parser for.
-  function focusWindow(toplevel) {
-    if (!root.bar || !toplevel || !toplevel.address) return
+  function focusWindowCommand(toplevel) {
+    if (!toplevel || !toplevel.address) return ""
     var address = "address:0x" + String(toplevel.address).toLowerCase()
     var lua = 'local warps = hl.get_config("cursor.no_warps")'
       + ' hl.config({ cursor = { no_warps = true } })'
       + ' hl.dispatch(hl.dsp.focus({ window = "' + address + '" }))'
       + ' hl.config({ cursor = { no_warps = warps } })'
-    root.bar.run("hyprctl eval " + Util.shellQuote(lua))
+    return "hyprctl eval " + Util.shellQuote(lua)
+  }
+
+  function focusWindow(toplevel) {
+    var command = root.focusWindowCommand(toplevel)
+    if (root.bar && command) root.bar.run(command)
+  }
+
+  // A scrolling workspace is the other case where the icon's window can be out
+  // of sight: it may sit in a column scrolled off screen. Focusing the window
+  // scrolls it into view (scrolling:follow_focus) and switches to its
+  // workspace in the same step. A workspace's layout can change at runtime, so
+  // ask Hyprland at click time instead of tracking it.
+  function revealWindow(toplevel, id) {
+    var focusWindow = root.focusWindowCommand(toplevel)
+    if (!root.bar || !focusWindow) return root.focusWorkspace(id)
+    var layout = "hyprctl -j workspaces | jq -r " + Util.shellQuote(".[] | select(.id == " + Number(id) + ") | .tiledLayout")
+    root.bar.run('if [ "$(' + layout + ')" = scrolling ]; then ' + focusWindow + "; else " + root.focusWorkspaceCommand(id) + "; fi")
+  }
+
+  // Right-clicking an icon opens a small menu for the window it stands for.
+  // PopupCard hands itself to the bar's popout coordinator with this widget as
+  // owner, which calls close() when another popup takes over.
+  property var menuToplevel: null
+  property Item menuAnchor: null
+  property bool windowMenuOpen: false
+  readonly property string menuWindowTitle: root.menuToplevel ? String(root.menuToplevel.title || "") : ""
+
+  function close() { root.windowMenuOpen = false }
+
+  function openWindowMenu(toplevel, anchor) {
+    if (root.bar) root.bar.hideTooltip(anchor)
+    root.menuToplevel = toplevel
+    root.menuAnchor = anchor
+    root.windowMenuOpen = true
+  }
+
+  function closeWindow(toplevel) {
+    root.close()
+    if (!root.bar || !toplevel || !toplevel.address) return
+    var address = "address:0x" + String(toplevel.address).toLowerCase()
+    root.bar.run("hyprctl dispatch " + Util.shellQuote('hl.dsp.window.close({ window = "' + address + '" })'))
   }
 
   // Window detail (pid, geometry, class) comes from this widget's own
@@ -177,6 +220,8 @@ BarWidget {
       signature.push([address, client.pid, client.class, positions[address], client.workspace ? client.workspace.id : "", client.fullscreen].join(":"))
     }
     root.tiledPositions = positions
+    // The window the menu was opened for has gone, taking its icon with it.
+    if (root.windowMenuOpen && !map[String(root.menuToplevel && root.menuToplevel.address || "").toLowerCase()]) root.close()
 
     root.clientsLoaded = true
     // Every new model array rebuilds the icon row, so only publish a snapshot
@@ -720,8 +765,9 @@ BarWidget {
                 // wherever the row layout rounded a shorter box to.
                 fixedHeight: root.barSize
                 onPressed: function(button) {
+                  if (button === Qt.RightButton) return root.openWindowMenu(icon.modelData, icon)
                   if (cell.maximized) root.focusWindow(icon.modelData)
-                  else root.focusWorkspace(cell.modelData)
+                  else root.revealWindow(icon.modelData, cell.modelData)
                 }
 
                 Image {
@@ -872,6 +918,74 @@ BarWidget {
             visible: icons.visible
             width: icons.visible ? Math.max(0, (numberButton.width - numberButton.labelWidth) / 2) : 0
           }
+        }
+      }
+    }
+  }
+
+  // Styled after the tray's own context menu, so the two read as one.
+  PopupCard {
+    id: windowMenu
+    anchorItem: root.menuAnchor || root
+    bar: root.bar
+    owner: root
+    open: root.windowMenuOpen
+    padding: Style.space(8)
+    readonly property color tint: root.bar ? root.bar.foreground : Color.foreground
+    readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+    borderColor: Qt.rgba(tint.r, tint.g, tint.b, 0.45)
+    contentWidth: windowMenu.fittedContentWidth(Style.space(232))
+    contentHeight: windowMenu.fittedContentHeight(menuColumn.implicitHeight)
+
+    Column {
+      id: menuColumn
+      anchors.fill: parent
+      spacing: 0
+
+      Text {
+        textFormat: Text.PlainText
+        width: parent.width
+        height: Style.space(26)
+        leftPadding: Style.space(10)
+        rightPadding: Style.space(10)
+        verticalAlignment: Text.AlignVCenter
+        text: root.menuWindowTitle
+        color: Qt.darker(windowMenu.tint, 1.4)
+        font.family: windowMenu.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+        visible: text !== ""
+      }
+
+      Item {
+        width: parent.width
+        implicitHeight: Style.space(30)
+
+        Rectangle {
+          anchors.fill: parent
+          radius: Math.max(2, Style.cornerRadius)
+          color: closeMouse.containsMouse ? Style.hoverFillFor(windowMenu.tint, windowMenu.tint) : "transparent"
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.left: parent.left
+          anchors.leftMargin: Style.space(10)
+          anchors.right: parent.right
+          anchors.rightMargin: Style.space(10)
+          text: "Close"
+          color: windowMenu.tint
+          font.family: windowMenu.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        MouseArea {
+          id: closeMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.closeWindow(root.menuToplevel)
         }
       }
     }
