@@ -355,6 +355,16 @@ BarWidget {
     return binary === "codex" ? "codex" : "claude"
   }
 
+  // The RDP manager launches every FreeRDP session with its own /wm-class of
+  // "omarchy-rdp-<connection-id>", so no two sessions share a class and none of
+  // them matches a desktop entry or icon-theme name. They all get the one mark
+  // shipped next to this file instead.
+  readonly property string rdpIconSource: Qt.resolvedUrl("assets/rdp.svg")
+
+  function isRdpClass(appId) {
+    return /^omarchy-rdp(-|$)/.test(String(appId || ""))
+  }
+
   // omarchy-launch-tui defaults an unlabeled command's class to
   // "org.omarchy.<binary>" (e.g. "org.omarchy.yazi" for `omarchy-launch-tui
   // yazi`) unless the caller passes its own --app-id, as omarchy-agent does.
@@ -710,6 +720,7 @@ BarWidget {
                 readonly property int windowPid: (hyprClient && hyprClient.pid) || 0
                 readonly property bool isAgentWindow: windowClass === "org.omarchy.agent"
                 readonly property bool isTerminalWindow: root.isTerminalClass(windowClass)
+                readonly property bool isRdpWindow: root.isRdpClass(windowClass)
                 readonly property bool agentDetectable: isAgentWindow || isTerminalWindow
                 property string detectedAgentBinary: ""
                 // Program in the foreground of a terminal window (see windowProbeScript).
@@ -744,7 +755,10 @@ BarWidget {
                   var entry = root.findExactDesktopEntry(foregroundBinary)
                   return Quickshell.iconPath((entry && entry.icon) || foregroundBinary, true)
                 }
+                // An RDP session is never a terminal, so its mark cannot collide
+                // with the foreground-program icon below.
                 readonly property string imageSource: overridePath !== "" ? Util.fileUrl(overridePath)
+                  : isRdpWindow ? root.rdpIconSource
                   : foregroundIconPath !== "" ? foregroundIconPath
                   : iconName !== "" ? Quickshell.iconPath(iconName, "application-x-executable") : ""
                 // Until an icon is measured (or with normalizing off) its artwork
