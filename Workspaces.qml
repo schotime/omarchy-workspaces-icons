@@ -151,14 +151,26 @@ BarWidget {
   property Item menuAnchor: null
   property bool windowMenuOpen: false
   readonly property string menuWindowTitle: root.menuToplevel ? String(root.menuToplevel.title || "") : ""
+  // The launcher entry behind the icon, for "New window". An agent's entry is a
+  // guess from its terminal, so it gets none rather than the wrong app.
+  property var menuEntry: null
 
   function close() { root.windowMenuOpen = false }
 
   function openWindowMenu(toplevel, anchor) {
     if (root.bar) root.bar.hideTooltip(anchor)
     root.menuToplevel = toplevel
+    root.menuEntry = (anchor && !anchor.isAgentWindow && anchor.desktopEntry) || null
     root.menuAnchor = anchor
     root.windowMenuOpen = true
+  }
+
+  // Launched the way the app launcher does, so the window lands in an app scope
+  // rather than the bar's.
+  function launchEntry(entry) {
+    root.close()
+    if (!root.bar || !entry || !entry.id) return
+    root.bar.run("uwsm-app -- gtk-launch " + Util.shellQuote(String(entry.id) + ".desktop"))
   }
 
   function closeWindow(toplevel) {
@@ -190,7 +202,7 @@ BarWidget {
 
   // Events that can add, remove, move or re-tile a window. Focus changes are in
   // because a swap or resize emits nothing of its own, but is usually followed by one.
-  readonly property var clientEvents: ["openwindow", "closewindow", "movewindowv2", "changefloatingmode", "fullscreen", "activewindowv2", "configreloaded"]
+  readonly property var clientEvents: ["openwindow", "closewindow", "movewindowv2", "changefloatingmode", "fullscreen", "activewindowv2", "configreloaded", "togglegroup", "moveintogroup", "moveoutofgroup"]
 
   function fetchClients() {
     if (clientsProc.running) {
@@ -217,7 +229,8 @@ BarWidget {
       var at = (client.at && client.at.length === 2) ? client.at : [0, 0]
       var remembered = root.tiledPositions[address]
       positions[address] = (client.fullscreen > 0 && remembered) ? remembered : at
-      signature.push([address, client.pid, client.class, positions[address], client.workspace ? client.workspace.id : "", client.fullscreen].join(":"))
+      signature.push([address, client.pid, client.class, positions[address], client.workspace ? client.workspace.id : "", client.fullscreen,
+        (client.grouped || []).join(","), client.visible].join(":"))
     }
     root.tiledPositions = positions
     // The window the menu was opened for has gone, taking its icon with it.
@@ -235,6 +248,27 @@ BarWidget {
   function clientFor(toplevel) {
     if (!toplevel || !toplevel.address) return null
     return root.clients[String(toplevel.address).toLowerCase()] || null
+  }
+
+  // A group stacks its windows in one tile and shows one at a time, so like a
+  // maximized workspace the icon is the only handle on the hidden ones.
+  function inGroup(toplevel) {
+    var client = root.clientFor(toplevel)
+    return client !== null && (client.grouped || []).length > 1
+  }
+
+  // Hyprland reports `visible: false` only for a group member behind another
+  // tab - windows on a workspace that isn't shown still report true.
+  function behindGroupTab(toplevel) {
+    var client = root.clientFor(toplevel)
+    return root.inGroup(toplevel) && client.visible === false
+  }
+
+  // Grouped windows share their tile's position, so order them by tab.
+  function groupIndex(toplevel) {
+    var client = root.clientFor(toplevel)
+    if (!client || !client.grouped) return 0
+    return Math.max(0, client.grouped.indexOf("0x" + String(toplevel.address).toLowerCase()))
   }
 
   // Hyprland's fullscreen modes: 0 none, 1 maximized (SUPER+ALT+F "Full width"),
@@ -301,7 +335,9 @@ BarWidget {
     sorted.sort(function(left, right) {
       var a = root.toplevelPosition(left)
       var b = root.toplevelPosition(right)
-      return a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1]
+      if (a[0] !== b[0]) return a[0] - b[0]
+      if (a[1] !== b[1]) return a[1] - b[1]
+      return root.groupIndex(left) - root.groupIndex(right)
     })
     return sorted
   }
@@ -360,6 +396,76 @@ BarWidget {
   // them matches a desktop entry or icon-theme name. They all get the one mark
   // shipped next to this file instead.
   readonly property string rdpIconSource: Qt.resolvedUrl("assets/rdp.svg")
+
+  // A theme lookup (image://icon) hands back the file nearest the size asked
+  // for, so an app that ships only PNGs gets a smaller one stretched up -
+  // brave's 32px drawn into a 36px box comes out soft. Resolve each icon name
+  // to its own file instead - an SVG, else the largest PNG - so the Image only
+  // ever scales down. Names resolve once, in the background; until then (and
+  // for names with no file) the theme lookup stands in.
+  property var sharpIcons: ({})
+  // Mutated in place, not reassigned, so asking from a binding notifies nothing.
+  readonly property var sharpIconQueue: []
+
+  function sharpIconSource(name, fallback) {
+    name = String(name || "")
+    if (name === "" || name.charAt(0) === "/") return fallback
+    var path = root.sharpIcons[name]
+    if (path === undefined) {
+      if (root.sharpIconQueue.indexOf(name) === -1) {
+        root.sharpIconQueue.push(name)
+        Qt.callLater(root.resolveSharpIcons)
+      }
+      return fallback
+    }
+    return path !== "" ? Util.fileUrl(path) : fallback
+  }
+
+  function resolveSharpIcons() {
+    if (sharpIconProc.running || root.sharpIconQueue.length === 0) return
+    sharpIconProc.names = root.sharpIconQueue.splice(0)
+    sharpIconProc.running = true
+  }
+
+  // Prints "name<TAB>path" per name (path empty when nothing matched), looking
+  // through the current icon theme before hicolor, user dirs before system.
+  readonly property string sharpIconScript:
+    "theme=$(gsettings get org.gnome.desktop.interface icon-theme 2>/dev/null | tr -d \"'\"); "
+    + "dirs=; for b in \"${XDG_DATA_HOME:-$HOME/.local/share}/icons\" \"$HOME/.icons\" /usr/share/icons; do "
+    + "for t in $theme hicolor; do [ -d \"$b/$t\" ] && dirs=\"$dirs $b/$t\"; done; done; "
+    + "for n; do best=; size=0; "
+    + "for d in $dirs; do "
+    + "best=$(find \"$d\" -path \"*/apps/$n.svg\" -print -quit 2>/dev/null); [ -n \"$best\" ] && break; "
+    + "for f in $(find \"$d\" -path \"*/apps/$n.png\" 2>/dev/null); do "
+    + "s=$(echo \"$f\" | sed -n 's|.*/\\([0-9]*\\)x[0-9]*\\(@[0-9]*x\\)\\?/.*|\\1|p'); "
+    + "[ \"${s:-0}\" -gt \"$size\" ] && { size=$s; best=$f; }; done; "
+    + "[ -n \"$best\" ] && break; done; "
+    + "if [ -z \"$best\" ]; then for f in /usr/share/pixmaps/$n.svg /usr/share/pixmaps/$n.png; do "
+    + "[ -f \"$f\" ] && { best=$f; break; }; done; fi; "
+    + "printf '%s\\t%s\\n' \"$n\" \"$best\"; done"
+
+  Process {
+    id: sharpIconProc
+    property var names: []
+    command: ["bash", "-c", root.sharpIconScript, "sharp-icons"].concat(names)
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var next = Object.assign({}, root.sharpIcons)
+        var lines = text.split("\n")
+        for (var i = 0; i < lines.length; i++) {
+          var tab = lines[i].indexOf("\t")
+          if (tab > 0) next[lines[i].substr(0, tab)] = lines[i].substr(tab + 1)
+        }
+        // Names the script never got to still count as looked up.
+        for (var j = 0; j < sharpIconProc.names.length; j++) {
+          if (next[sharpIconProc.names[j]] === undefined) next[sharpIconProc.names[j]] = ""
+        }
+        root.sharpIcons = next
+      }
+    }
+    onExited: Qt.callLater(root.resolveSharpIcons)
+  }
 
   function isRdpClass(appId) {
     return /^omarchy-rdp(-|$)/.test(String(appId || ""))
@@ -481,6 +587,11 @@ BarWidget {
   // full-bleed icon and a padded one end up the same size. Set "iconFill" on
   // this widget's entry to tune it (1 = edge to edge).
   readonly property real iconFill: Math.max(0.5, Math.min(1, Number(setting("iconFill", 0.85))))
+  // Icon box as a share of the bar's height. Set "iconScale" on this widget's
+  // entry to grow the icons without making the whole bar taller.
+  readonly property real iconScale: Math.max(0.3, Math.min(0.9, Number(setting("iconScale", 0.58))))
+  // Same for the workspace number, as a share of the body font.
+  readonly property real numberScale: Math.max(0.5, Math.min(2, Number(setting("numberScale", 0.8))))
   // Caps the zoom, so a small glyph on a big empty canvas isn't blown up to mush.
   readonly property real maxIconZoom: 1.5
   // Soft drop shadows are faint; only pixels at least this opaque count as artwork.
@@ -598,7 +709,7 @@ BarWidget {
         // Scales with the bar's height (size-horizontal in shell.toml), so a
         // taller bar makes the icons bigger and easier to hit, not just the
         // gaps around them. 0.58 is what a stock 26px bar used to get.
-        readonly property real iconSize: Math.round(root.barSize * 0.58)
+        readonly property real iconSize: Math.round(root.barSize * root.iconScale)
         readonly property real leadPad: index === 0 ? 0 : root.cellLeadPad
         readonly property real trailPad: index === root.workspaceIds().length - 1
           ? 0 : root.cellTrailPad
@@ -664,7 +775,7 @@ BarWidget {
             }
             foreground: root.bar ? root.bar.barForeground : Color.foreground
             useActiveColor: false
-            fontSize: Math.round(Style.font.body * 0.8)
+            fontSize: Math.round(Style.font.body * root.numberScale)
             opacity: cell.occupied || cell.focused ? 1 : 0.5
             horizontalMargin: 6
             verticalPadding: 6
@@ -753,14 +864,16 @@ BarWidget {
                 readonly property string foregroundIconPath: {
                   if (foregroundBinary === "" || root.knownShells.indexOf(foregroundBinary) !== -1) return ""
                   var entry = root.findExactDesktopEntry(foregroundBinary)
-                  return Quickshell.iconPath((entry && entry.icon) || foregroundBinary, true)
+                  var name = (entry && entry.icon) || foregroundBinary
+                  var themed = Quickshell.iconPath(name, true)
+                  return themed !== "" ? root.sharpIconSource(name, themed) : ""
                 }
                 // An RDP session is never a terminal, so its mark cannot collide
                 // with the foreground-program icon below.
                 readonly property string imageSource: overridePath !== "" ? Util.fileUrl(overridePath)
                   : isRdpWindow ? root.rdpIconSource
                   : foregroundIconPath !== "" ? foregroundIconPath
-                  : iconName !== "" ? Quickshell.iconPath(iconName, "application-x-executable") : ""
+                  : iconName !== "" ? root.sharpIconSource(iconName, Quickshell.iconPath(iconName, "application-x-executable")) : ""
                 // Until an icon is measured (or with normalizing off) its artwork
                 // is taken to fill the whole box.
                 readonly property var bounds: (root.normalizeIcons && root.iconBounds[imageSource])
@@ -773,14 +886,27 @@ BarWidget {
                 // this keeps the old `visible: status === Image.Ready` behaviour.
                 hasVisualContent: image.status === Image.Ready
                 tooltipText: windowTitle
+                // Dim the windows hidden behind another tab in their group, so the
+                // bright icon is the one on screen.
+                dimmed: root.behindGroupTab(modelData)
                 fixedWidth: cell.iconSize
                 // Full bar height, so the button sits flush with the bar's edges
                 // and the image below can centre itself on the bar, not on
                 // wherever the row layout rounded a shorter box to.
                 fixedHeight: root.barSize
+                // The bar hands a click to the last-registered button under the
+                // pointer, and the full-cell button sits under every icon. Buttons
+                // register on creation and again whenever the bar changes, in no
+                // fixed order, so re-register icons once the rest have, or the cell
+                // can end up on top and swallow icon clicks.
+                Component.onCompleted: Qt.callLater(icon.syncClickRegistration)
+                Connections {
+                  target: root
+                  function onBarChanged() { Qt.callLater(icon.syncClickRegistration) }
+                }
                 onPressed: function(button) {
                   if (button === Qt.RightButton) return root.openWindowMenu(icon.modelData, icon)
-                  if (cell.maximized) root.focusWindow(icon.modelData)
+                  if (cell.maximized || root.inGroup(icon.modelData)) root.focusWindow(icon.modelData)
                   else root.revealWindow(icon.modelData, cell.modelData)
                 }
 
@@ -793,7 +919,10 @@ BarWidget {
                   // than it is wide and sits a pixel off-centre in the bar.
                   // The bar window renders at the monitor's own (fractional) scale,
                   // so that is the pixel grid to land on.
-                  readonly property real dpr: root.monitor && root.monitor.scale > 0 ? root.monitor.scale : Screen.devicePixelRatio
+                  readonly property real dpr: root.monitor && root.monitor.scale > 0 ? root.monitor.scale
+                    // Screen's ratio is the output's whole-number scale (2 at 1.25);
+                    // the window's is what it actually renders at.
+                    : (root.QsWindow && root.QsWindow.window ? root.QsWindow.window.devicePixelRatio : Screen.devicePixelRatio)
                   readonly property int barPx: Math.round(root.barSize * dpr)
 
                   function misalignment(edge) { return Math.abs(edge - Math.round(edge)) }
@@ -969,6 +1098,39 @@ BarWidget {
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
         visible: text !== ""
+      }
+
+      Item {
+        width: parent.width
+        implicitHeight: Style.space(30)
+        visible: root.menuEntry !== null
+
+        Rectangle {
+          anchors.fill: parent
+          radius: Math.max(2, Style.cornerRadius)
+          color: newMouse.containsMouse ? Style.hoverFillFor(windowMenu.tint, windowMenu.tint) : "transparent"
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.left: parent.left
+          anchors.leftMargin: Style.space(10)
+          anchors.right: parent.right
+          anchors.rightMargin: Style.space(10)
+          text: "New window"
+          color: windowMenu.tint
+          font.family: windowMenu.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        MouseArea {
+          id: newMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.launchEntry(root.menuEntry)
+        }
       }
 
       Item {
