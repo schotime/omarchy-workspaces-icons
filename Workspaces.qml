@@ -728,7 +728,9 @@ BarWidget {
           // Grow the right edge by the same amount the left edge reached out.
           width: badgeRight + (normalLeft - x) - x
           height: Math.max(maximizedOutline.height, Math.min(parent.height, cell.iconSize + Style.space(4)))
-          radius: Style.space(3)
+          // Match the window corners (Hyprland decoration:rounding), capped so a
+          // short badge doesn't collapse into a pill.
+          radius: Math.min(Style.cornerRadius, height / 2)
           // Upstream paints this solid. Take the colour from the same fill system
           // every other control uses (`selected-color` in
           // ~/.config/omarchy/shell.toml, "foreground" by default, so it stays
@@ -791,7 +793,7 @@ BarWidget {
               // so the number gets breathing room without shifting the layout.
               width: numberButton.labelWidth + Style.space(10)
               height: Math.min(parent.height, cell.iconSize + Style.space(7))
-              radius: Style.space(3)
+              radius: Math.min(Style.cornerRadius, height / 2)
               color: "transparent"
               border.width: Math.max(1, Style.space(1))
               // Neutral: the bar's own text colour, softened.
