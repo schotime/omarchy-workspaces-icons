@@ -202,7 +202,7 @@ BarWidget {
 
   // Events that can add, remove, move or re-tile a window. Focus changes are in
   // because a swap or resize emits nothing of its own, but is usually followed by one.
-  readonly property var clientEvents: ["openwindow", "closewindow", "movewindowv2", "changefloatingmode", "fullscreen", "activewindowv2", "configreloaded", "togglegroup", "moveintogroup", "moveoutofgroup"]
+  readonly property var clientEvents: ["openwindow", "closewindow", "movewindowv2", "changefloatingmode", "fullscreen", "activewindowv2", "configreloaded", "togglegroup", "moveintogroup", "moveoutofgroup", "windowtitlev2"]
 
   function fetchClients() {
     if (clientsProc.running) {
@@ -828,8 +828,11 @@ BarWidget {
                 required property var modelData
 
                 readonly property var hyprClient: root.clientFor(modelData)
-                readonly property string windowClass: (modelData.wayland && modelData.wayland.appId)
-                  || (hyprClient && hyprClient.class) || ""
+                // Hyprland's class first: the toplevel's appId is fixed at map time, but
+                // some apps re-class their window later (LibreOffice opens as
+                // libreoffice-startcenter, then becomes libreoffice-calc/-writer).
+                readonly property string windowClass: (hyprClient && hyprClient.class)
+                  || (modelData.wayland && modelData.wayland.appId) || ""
                 readonly property int windowPid: (hyprClient && hyprClient.pid) || 0
                 readonly property bool isAgentWindow: windowClass === "org.omarchy.agent"
                 readonly property bool isTerminalWindow: root.isTerminalClass(windowClass)
